@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Agent Dashboard</title>
+    <style>
+        body { font-family: sans-serif; background: #f4f7f6; padding: 20px; }
+        .popup {
+            display: none; position: fixed; bottom: 30px; right: 30px;
+            width: 300px; background: white; border-radius: 10px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.3); padding: 20px;
+            border-left: 5px solid #28a745; transition: 0.3s;
+        }
+        .popup h3 { margin: 0 0 10px 0; color: #333; }
+        .popup p { margin: 5px 0; color: #666; }
+    </style>
+</head>
+<body>
+    <h1>CRM Agent Dashboard</h1>
+    <p>Waiting for live calls...</p>
+
+    <div id="callPopup" class="popup">
+        <h3>📞 Live Call Detected</h3>
+        <p id="callerName"></p>
+        <p id="callerNum"></p>
+        <p id="callDirection"></p>
+    </div>
+
+    <script>
+        const socket = new WebSocket('ws://' + window.location.host + '/ws/calls/');
+
+        socket.onmessage = function(e) {
+            const data = JSON.parse(e.data);
+            const popup = document.getElementById('callPopup');
+            
+            document.getElementById('callerName').innerText = "From: " + data.caller;
+            document.getElementById('callerNum').innerText = "Number: " + data.number;
+            document.getElementById('callDirection').innerText = "To: " + data.destination;
+            
+            popup.style.display = 'block';
+
+            // Hide after 8 seconds
+            setTimeout(() => { popup.style.display = 'none'; }, 8000);
+        };
+    </script>
+</body>
+</html>

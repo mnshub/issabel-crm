@@ -1,6 +1,6 @@
 from django.db import models
 from .utils import normalize_phone_number
-
+from django.contrib.auth.models import User
 
 
 
@@ -21,9 +21,10 @@ class Customer(models.Model):
         return f"{self.first_name} {self.last_name or ''} - {self.phone_number}"
 
 class Agent(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='agent_profile', null=True, blank=True)
     full_name = models.CharField(max_length=150)
     email = models.EmailField(unique=True)
-    is_active = models.BooleanField(unique=True)
+    is_active = models.BooleanField(default=True)
     created_at = models.BooleanField(default=True)
 
     def __str__(self):
