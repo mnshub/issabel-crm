@@ -121,11 +121,8 @@ STATIC_URL = 'static/'
 
 CHANNEL_LAYERS = {
     "default": {
-        "BACKEND": "channels_redis.core.RedisChannelLayer",
-        "CONFIG": {
-            "hosts": [("127.0.0.1", 6379)], # Double check this port
-        },
-    },
+        "BACKEND": "channels.layers.InMemoryChannelLayer"
+    }
 }
 
 LOGIN_REDIRECT_URL = 'dashboard'
