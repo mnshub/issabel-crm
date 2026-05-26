@@ -13,7 +13,33 @@ from django.conf import settings
 from channels.layers import get_channel_layer
 from asgiref.sync import sync_to_async
 from django.core.management import call_command
-from crm.models import Extension
+from crm.models import Extension, Customer  # <-- Added Customer import
+
+# --- ADDED: Helper to identify the caller's real name ---
+def get_caller_info(number):
+    """Checks if a number belongs to an internal agent or a saved customer."""
+    clean_num = str(number).strip()
+    
+    # 1. Check if it belongs to an internal Extension
+    try:
+        ext = Extension.objects.select_related('agent__user').get(extension_number=clean_num)
+        if ext.agent and ext.agent.user:
+            # Try to use First + Last name, fallback to username
+            full_name = f"{ext.agent.user.first_name} {ext.agent.user.last_name}".strip()
+            return full_name or ext.agent.user.username
+    except Extension.DoesNotExist:
+        pass
+
+    # 2. Check if it belongs to a known Customer
+    try:
+        customer = Customer.objects.get(phone_number=clean_num)
+        full_name = f"{customer.first_name} {customer.last_name}".strip()
+        return full_name or "Known Customer"
+    except Customer.DoesNotExist:
+        pass
+
+    return "Unknown Caller"
+# --------------------------------------------------------
 
 # --- THE FIX: Fully synchronous DB helper function ---
 def get_agent_username(ext_num):
@@ -31,7 +57,8 @@ def get_agent_username(ext_num):
         return "NOT_FOUND"
     except Exception as e:
         print(f"DB Lookup Error: {e}")
-    return None# ---------------------------------------------------
+    return None
+# ---------------------------------------------------
 
 async def trigger_cdr_import():
     await asyncio.sleep(2)
@@ -59,9 +86,11 @@ async def call_event_handler(manager, message):
                 return
 
             clean_dest = str(dest_num).strip()
+            clean_caller = str(caller_num).strip() # Clean the caller number
             
-            # --- THE FIX: Call the synchronous helper safely ---
+            # Call the synchronous helpers safely
             agent_username = await sync_to_async(get_agent_username)(clean_dest)
+            caller_name = await sync_to_async(get_caller_info)(clean_caller) # Look up the real name
             
             if agent_username == "NOT_FOUND":
                 print(f"DEBUG: Extension '{clean_dest}' not found in CRM database. Ignoring.")
@@ -73,11 +102,11 @@ async def call_event_handler(manager, message):
                     f"agent_{agent_username}",
                     {
                         "type": "call_notification",
-                        "caller": "Unknown",
-                        "number": str(caller_num).strip()
+                        "caller": caller_name,  # <-- Replaced "Unknown" with the real name
+                        "number": clean_caller
                     }
                 )
-                print("DEBUG: WebSocket message sent successfully!")
+                print(f"DEBUG: WebSocket message sent successfully! (Identified: {caller_name})")
             else:
                 print(f"DEBUG: Extension '{clean_dest}' exists, but has no user assigned.")
 
