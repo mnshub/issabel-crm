@@ -65,27 +65,22 @@ class CallLog(models.Model):
     customer = models.ForeignKey(Customer, on_delete=models.SET_NULL, null=True, blank=True)
     agent = models.ForeignKey(Agent, on_delete=models.SET_NULL, null=True, blank=True)
     extension = models.ForeignKey(Extension, on_delete=models.SET_NULL, null=True, blank=True)
-
     call_type = models.CharField(max_length=10, choices=CALL_TYPE_CHOICES, default='unknown')
     phone_number = models.CharField(max_length=20)
-
     source_number = models.CharField(max_length=20, blank=True, null=True)
     destination_number = models.CharField(max_length=20, blank=True, null=True)
-
     duration = models.PositiveIntegerField(default=0, help_text="Duration in seconds")
     billsec = models.PositiveIntegerField(default=0, help_text="Billable seconds")
-
     call_time = models.DateTimeField()
-
     recording_file = models.CharField(max_length=255, blank=True, null=True)
     disposition = models.CharField(max_length=20, choices=DISPOSITION_CHOICES, blank=True, null=True)
-
     uniqueid = models.CharField(max_length=50, blank=True, null=True, unique=True)
     linkedid = models.CharField(max_length=50, blank=True, null=True)
-
     raw_data = models.JSONField(blank=True, null=True)
-
     created_at = models.DateTimeField(auto_now_add=True)
+    asterisk_id = models.CharField(max_length=100, unique=True, null=True) # To prevent duplicates
+    recording_path = models.CharField(max_length=255, null=True, blank=True)
+    notes = models.TextField(blank=True)
 
     def save(self, *args, **kwargs):
         if self.phone_number:

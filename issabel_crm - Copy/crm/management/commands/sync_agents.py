@@ -57,7 +57,7 @@ class Command(BaseCommand):
                         defaults={
                             'extension_number': ext_num,
                             'is_active': True,
-                            'technology': 'PJSIP'
+                            'technology': 'SIP'
                         }
                     )
 

@@ -51,7 +51,7 @@ class Command(BaseCommand):
 
                     # simple call type detection
                     if src.startswith('0') and not dst.startswith('0'):
-                        call_type = 'inbound'
+                        call_type = 'incoming'
                         phone_number = src
                     elif not src.startswith('0') and dst.startswith('0'):
                         call_type = 'outbound'

@@ -24,5 +24,7 @@ urlpatterns = [
     path('dashboard/', views.dashboard, name='dashboard'),
     path('login/', auth_views.LoginView.as_view(template_name='crm/login.html'), name='login'),
     path('logout/', auth_views.LogoutView.as_view(next_page='login'), name='logout'),
+    path('call/play/<int:log_id>/', views.play_recording, name='play_recording'),
+    path('call/dial/<str:phone_number>/', views.click_to_dial, name='click_to_dial'),
 ]
 

@@ -1,0 +1,34 @@
+version: '3.8'
+
+services:
+  # The Redis "Mailbox"
+  redis:
+    image: redis:7-alpine
+    restart: always
+    ports:
+      - "6379:6379"
+
+  # The Django App (Daphne/Websockets)
+  web:
+    build: .
+    command: python manage.py runserver 0.0.0.0:8000
+    volumes:
+      - .:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_HOST=redis
+    depends_on:
+      - redis
+
+  # The AMI Listener (Background Worker)
+  ami_worker:
+    build: .
+    command: python crm/ami_listener.py
+    volumes:
+      - .:/app
+    environment:
+      - REDIS_HOST=redis
+    depends_on:
+      - redis
+      - web
