@@ -57,7 +57,7 @@ def dashboard(request):
         'current_filters': request.GET 
     }
     return render(request, 'crm/agent_dashboard.html', context)
-    
+
 
 @login_required
 def play_recording(request, log_id):
@@ -96,7 +96,12 @@ async def click_to_dial(request, phone_number):
     tech = extension.technology  # This will be 'SIP' or 'PJSIP'
     ext_num = extension.extension_number
 
-    manager = Manager(host='10.28.0.115', port=5038, username='django_crm', secret='Admin1234')
+    manager = Manager(
+    host=settings.AMI_HOST, 
+    port=settings.AMI_PORT, 
+    username=settings.AMI_USER, 
+    secret=settings.AMI_PASS
+    )
     
     try:
         await manager.connect()

@@ -1,73 +1,120 @@
 import os
-import django
 import sys
 import asyncio
+import traceback
 from panoramisk import Manager
-from asgiref.sync import sync_to_async
-from channels.layers import get_channel_layer
 
-# 1. Environment Setup
-sys.path.append(os.getcwd())
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+import django
 django.setup()
 
-# 2. Imports after setup
-from crm.utils import normalize_phone_number
-from crm.models import Customer, Agent
+from django.conf import settings
+from channels.layers import get_channel_layer
+from asgiref.sync import sync_to_async
+from django.core.management import call_command
+from crm.models import Extension
 
-async def handle_events(manager, event):
-    if event.event == 'DialBegin':
-        raw_caller = getattr(event, 'CallerIDNum', 'unknown')
-        raw_dest = getattr(event, 'DestCallerIDNum', None) or getattr(event, 'DialString', 'unknown')
+# --- THE FIX: Fully synchronous DB helper function ---
+def get_agent_username(ext_num):
+    """Safely fetches the username linked to an extension using correct model fields."""
+    try:
+        # Use 'agent__user' because your Extension model has a field named 'agent'
+        ext = Extension.objects.select_related('agent__user').get(extension_number=ext_num)
         
-        caller_num = normalize_phone_number(raw_caller.split('/')[-1] if '/' in raw_caller else raw_caller)
-        dest_num = normalize_phone_number(raw_dest.split('/')[-1] if '/' in raw_dest else raw_dest)
-
-        # Lookup logic
-        caller_name = "Unknown"
-        customer = await sync_to_async(lambda: Customer.objects.filter(phone_number=caller_num).first())()
-        
-        if customer:
-            caller_name = f"CUSTOMER: {customer.first_name} {customer.last_name}"
-        else:
-            agent_caller = await sync_to_async(lambda: Agent.objects.filter(extension__extension_number=caller_num).first())()
-            if agent_caller:
-                caller_name = f"AGENT: {agent_caller.full_name}"
-
-        # Target lookup
-        agent_dest = await sync_to_async(lambda: Agent.objects.select_related('user').filter(extension__extension_number=dest_num).first())()
-        
-        if agent_dest and agent_dest.user:
-            target_user_id = agent_dest.user.id
-            print(f"DEBUG: Notifying Agent {agent_dest.full_name} (User {target_user_id})")
+        # Access the 'agent' field (not agent_profile)
+        agent = getattr(ext, 'agent', None)
+        if agent and agent.user:
+            return agent.user.username
             
-            try:
+    except Extension.DoesNotExist:
+        return "NOT_FOUND"
+    except Exception as e:
+        print(f"DB Lookup Error: {e}")
+    return None# ---------------------------------------------------
+
+async def trigger_cdr_import():
+    await asyncio.sleep(2)
+    try:
+        print("Call ended. Auto-syncing CDR...")
+        await sync_to_async(call_command)('import_cdr')
+        print("Auto-sync complete.")
+    except Exception as e:
+        print(f"Auto-sync failed: {e}")
+
+async def call_event_handler(manager, message):
+    try:
+        if message.event in ['DialBegin', 'Dial']:
+            
+            caller_num = getattr(message, 'calleridnum', None) or getattr(message, 'callernum', 'Unknown')
+            dest_num = getattr(message, 'destcalleridnum', None) or getattr(message, 'destexten', 'Unknown')
+            
+            print(f"\n--- RAW RINGING EVENT ---")
+            print(f"Event Type: {message.event}")
+            print(f"Asterisk says Caller is: '{caller_num}'")
+            print(f"Asterisk says Destination is: '{dest_num}'")
+            print(f"-------------------------\n")
+
+            if dest_num == 'Unknown':
+                return
+
+            clean_dest = str(dest_num).strip()
+            
+            # --- THE FIX: Call the synchronous helper safely ---
+            agent_username = await sync_to_async(get_agent_username)(clean_dest)
+            
+            if agent_username == "NOT_FOUND":
+                print(f"DEBUG: Extension '{clean_dest}' not found in CRM database. Ignoring.")
+            elif agent_username:
+                print(f"DEBUG: Found agent '{agent_username}'. Sending popup to browser...")
+                
                 channel_layer = get_channel_layer()
                 await channel_layer.group_send(
-                    f"user_{target_user_id}",
+                    f"agent_{agent_username}",
                     {
-                        "type": "call_message",
-                        "message": {
-                            "caller": caller_name,
-                            "number": caller_num,
-                            "status": "ringing"
-                        }
+                        "type": "call_notification",
+                        "caller": "Unknown",
+                        "number": str(caller_num).strip()
                     }
                 )
-            except Exception as e:
-                print(f"❌ WS ERROR: {e}. Check if Redis is running.")
+                print("DEBUG: WebSocket message sent successfully!")
+            else:
+                print(f"DEBUG: Extension '{clean_dest}' exists, but has no user assigned.")
 
-async def run_listener():
-    # Update these with your actual Issabel credentials
-    manager = Manager(host='10.28.0.115', port=5038, username='django_crm', secret='Admin1234')
-    manager.register_event('DialBegin', handle_events)
-    
-    try:
-        await manager.connect()
-        print("✅ Monitoring live Issabel events...")
-        await asyncio.Event().wait() 
+        elif message.event == 'Hangup':
+            asyncio.create_task(trigger_cdr_import())
+
     except Exception as e:
-        print(f"❌ Connection failed: {e}")
+        print(f"\n❌ FATAL ERROR IN EVENT HANDLER: {e}")
+        traceback.print_exc()
+        print("----------------------------------\n")
 
-if __name__ == "__main__":
-    asyncio.run(run_listener())
+async def main():
+    while True:
+        manager = Manager(
+            host=settings.AMI_HOST,
+            port=settings.AMI_PORT,
+            username=settings.AMI_USER,
+            secret=settings.AMI_PASS
+        )
+        
+        manager.register_event('DialBegin', call_event_handler)
+        manager.register_event('Dial', call_event_handler)
+        manager.register_event('Hangup', call_event_handler)
+        
+        try:
+            print("Connecting to Asterisk AMI...")
+            await manager.connect()
+            print("Connected! Listening for events...")
+            await asyncio.Event().wait() 
+        except Exception as e:
+            print(f"AMI Connection lost: {e}. Reconnecting in 5 seconds...")
+            await asyncio.sleep(5)
+        finally:
+            manager.close()
+
+if __name__ == '__main__':
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Shutting down listener...")

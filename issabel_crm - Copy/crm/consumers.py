@@ -16,8 +16,9 @@ class CallConsumer(AsyncWebsocketConsumer):
             await self.close()
             return
 
-        self.user_id = str(user.id)
-        self.group_name = f"user_{self.user_id}"
+        # MATCH THE LISTENER: Use the username instead of the user ID
+        self.agent_username = user.username
+        self.group_name = f"agent_{self.agent_username}"
 
         try:
             print(f"DEBUG: Attempting to join group {self.group_name}...")
@@ -27,10 +28,10 @@ class CallConsumer(AsyncWebsocketConsumer):
                 self.channel_name
             )
             await self.accept()
-            print(f"✅ WS CONNECTED: User {self.user_id} joined {self.group_name}")
+            print(f"✅ WS CONNECTED: User {self.agent_username} joined {self.group_name}")
         except Exception as e:
             print(f"❌ CHANNEL LAYER ERROR: {e}")
-            await self.accept() 
+            await self.close() # Close connection on error
 
     async def disconnect(self, close_code):
         print(f"DEBUG: WebSocket disconnected with code: {close_code}")
@@ -39,5 +40,14 @@ class CallConsumer(AsyncWebsocketConsumer):
         except:
             pass
 
-    async def call_message(self, event):
-        await self.send(text_data=json.dumps(event['message']))
+    # MATCH THE LISTENER: This method name MUST match "type": "call_notification"
+    async def call_notification(self, event):
+        # Extract the data sent from ami_listener.py
+        caller = event.get('caller', 'Unknown')
+        number = event.get('number', 'Unknown')
+
+        # Send it down the WebSocket to the browser's JavaScript
+        await self.send(text_data=json.dumps({
+            'caller': caller,
+            'number': number
+        }))

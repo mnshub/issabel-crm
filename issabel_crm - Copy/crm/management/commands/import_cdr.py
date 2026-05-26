@@ -1,28 +1,35 @@
 import pymysql
+import pymysql.err
 from django.core.management.base import BaseCommand
 from crm.models import CallLog, Customer
 from crm.utils import normalize_phone_number
 from datetime import datetime, date
 from django.utils import timezone
 
-
-
 class Command(BaseCommand):
     help = "Import CDR records from Issabel/Asterisk database"
 
     def handle(self, *args, **kwargs):
-        connection = pymysql.connect(
-            host='10.28.0.115',
-            user='crm_reader',
-            password='Admin1234',
-            database='asteriskcdrdb',
-            cursorclass=pymysql.cursors.DictCursor
-        )
-
         imported = 0
         skipped = 0
 
+        # 1. Attempt to connect to the database. Catch network/auth errors first.
         try:
+            connection = pymysql.connect(
+                host='10.28.0.115',
+                user='crm_reader',
+                password='Admin1234',
+                database='asteriskcdrdb',
+                cursorclass=pymysql.cursors.DictCursor
+            )
+        except pymysql.err.OperationalError as e:
+            self.stdout.write(self.style.ERROR(f"Failed to connect to Issabel database: {e}"))
+            return # Exit the script safely if we can't connect
+
+        # 2. Wrap the execution in a try...finally block
+        try:
+            # 3. The 'with' statement acts as a context manager for the cursor.
+            # It guarantees that cursor.close() is called automatically when the block ends.
             with connection.cursor() as cursor:
                 cursor.execute("""
                     SELECT *
@@ -72,7 +79,6 @@ class Command(BaseCommand):
                     if call_time and timezone.is_naive(call_time):
                         call_time = timezone.make_aware(call_time, timezone.get_current_timezone())
 
-
                     CallLog.objects.create(
                         customer=customer,
                         call_type=call_type,
@@ -90,7 +96,13 @@ class Command(BaseCommand):
 
                     imported += 1
 
+        except Exception as e:
+            # If ANY error happens during the loop (e.g., bad data format), catch it here
+            self.stdout.write(self.style.ERROR(f"An error occurred during data processing: {e}"))
+            
         finally:
+            # 4. The 'finally' block executes NO MATTER WHAT (success or crash).
+            # This guarantees the connection to Issabel is closed safely.
             connection.close()
 
         self.stdout.write(
