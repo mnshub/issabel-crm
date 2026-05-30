@@ -166,7 +166,7 @@ LOGIN_REDIRECT_URL = 'dashboard'
 LOGOUT_REDIRECT_URL = 'login'
 
 # Asterisk AMI Settings
-AMI_HOST = '10.28.0.115'
+AMI_HOST = '192.168.100.115'
 AMI_PORT = 5038
 AMI_USER = 'django_crm'
 AMI_PASS = 'Admin1234' # In the future, we will move this to a .env file
