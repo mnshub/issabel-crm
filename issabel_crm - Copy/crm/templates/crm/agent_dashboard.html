@@ -1,3 +1,4 @@
+{% load tz %}
 <!DOCTYPE html>
 <html>
 <head>
@@ -9,7 +10,6 @@
         .container { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
         .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); margin-bottom: 20px; }
         
-        /* Table Styling */
         table { width: 100%; border-collapse: collapse; margin-top: 15px; }
         th, td { text-align: left; padding: 12px; border-bottom: 1px solid #eee; font-size: 13px; }
         th { background-color: #f8f9fa; color: #555; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
@@ -17,17 +17,14 @@
         .answered { background: #d4edda; color: #155724; }
         .no-answer { background: #f8d7da; color: #721c24; }
 
-        /* Filter Bar Styling */
         .filter-bar { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #eee; }
         .filter-form { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
         .filter-group { display: flex; flex-direction: column; }
         .filter-group label { font-size: 11px; color: #888; text-transform: uppercase; margin-bottom: 4px; font-weight: bold; }
         .filter-input { padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; }
 
-        /* Call Separation Layout */
         .log-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 
-        /* Notification pop-up */
         .popup {
             display: none; position: fixed; bottom: 30px; right: 30px;
             width: 320px; background: white; border-radius: 12px;
@@ -87,7 +84,7 @@
                                     <strong>{{ call.source_number }}</strong>
                                     <button onclick="makeCall('{{ call.source_number }}')" class="dial-btn">📞</button>
                                 </td>
-                                <td>{{ call.call_time|date:"H:i" }}</td>
+                                <td>{% timezone "Asia/Tehran" %}{{ call.call_time|date:"H:i" }}{% endtimezone %}</td>
                                 <td>
                                     <span class="status-badge {% if call.disposition == 'ANSWERED' %}answered{% else %}no-answer{% endif %}">
                                         {{ call.disposition }}
@@ -124,7 +121,7 @@
                                     <strong>{{ call.destination_number }}</strong>
                                     <button onclick="makeCall('{{ call.destination_number }}')" class="dial-btn">📞</button>
                                 </td>
-                                <td>{{ call.call_time|date:"H:i" }}</td>
+                                <td>{% timezone "Asia/Tehran" %}{{ call.call_time|date:"H:i" }}{% endtimezone %}</td>
                                 <td>
                                     <span class="status-badge {% if call.disposition == 'ANSWERED' %}answered{% else %}no-answer{% endif %}">
                                         {{ call.disposition }}
@@ -149,7 +146,6 @@
             <div class="card">
                 <h3>Quick Actions</h3>
                 <button onclick="location.reload();" style="width:100%; padding:10px; background:#007bff; color:white; border:none; border-radius:5px; cursor:pointer; margin-bottom:10px;">Refresh Workspace</button>
-                <button style="width:100%; padding:10px; background:#6c757d; color:white; border:none; border-radius:5px; cursor:not-allowed;">Search Database</button>
             </div>
         </div>
     </div>
@@ -176,18 +172,15 @@
             const data = JSON.parse(e.data);
             const popup = document.getElementById('callPopup');
 
-            // 1. Check if the backend is telling us to clear the popup
             if (data.action === 'clear') {
                 popup.style.display = 'none';
-                return; // Stop execution here
+                return;
             }
 
-            // 2. Otherwise, it's a new call. Show the popup.
             document.getElementById('callerInfo').innerText = data.caller;
             document.getElementById('callerNumber').innerText = "Number: " + data.number;
             popup.style.display = 'block';
         };
-
         
         function playAudio(logId) {
             const player = document.getElementById('audioPlayer');

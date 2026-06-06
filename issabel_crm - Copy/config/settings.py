@@ -32,12 +32,16 @@ STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-ujxl%4qdsjf9&0i2q*1fxrhi_htqhme*7u2c!%rzy52t*zdzcw'
-
+# SECRET_KEY = 'django-insecure-ujxl%4qdsjf9&0i2q*1fxrhi_htqhme*7u2c!%rzy52t*zdzcw'
+# 1. Pull the secret key from the environment, with a fallback for local dev
+SECRET_KEY = os.environ.get('SECRET_KEY', 'default-unsafe-key-for-dev')
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# DEBUG = True
+# 2. Check the environment for DEBUG. If it's not explicitly 'True', default to False.
+DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
 
-ALLOWED_HOSTS = []
+allowed_hosts_env = os.environ.get('ALLOWED_HOSTS', '127.0.0.1,localhost')
+ALLOWED_HOSTS = allowed_hosts_env.split(',')
 
 
 # Application definition
@@ -142,7 +146,7 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Tehran'
 
 USE_I18N = True
 

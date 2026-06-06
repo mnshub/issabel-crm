@@ -25,8 +25,8 @@ class Agent(models.Model):
     full_name = models.CharField(max_length=150)
     email = models.EmailField(unique=True)
     is_active = models.BooleanField(default=True)
-    created_at = models.BooleanField(default=True)
-
+    created_at = models.DateTimeField(auto_now_add=True)
+    
     def __str__(self):
         return self.full_name
 
