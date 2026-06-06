@@ -1,12 +1,12 @@
 import pymysql
 import pymysql.err
-import pytz  # Added to handle specific timezone localization
-from django.core.management.base import BaseCommand
 from config import settings
+from zoneinfo import ZoneInfo
+from django.utils import timezone
 from crm.models import CallLog, Customer
 from crm.utils import normalize_phone_number
-from datetime import datetime, date
-from django.utils import timezone
+from django.core.management.base import BaseCommand
+from datetime import datetime, date, timezone as dt_timezone
 
 class Command(BaseCommand):
     help = "Import CDR records from Issabel/Asterisk database"
@@ -15,8 +15,8 @@ class Command(BaseCommand):
         imported = 0
         skipped = 0
         
-        # Define the timezone for Tehran
-        tehran_tz = pytz.timezone('Asia/Tehran')
+
+        pbx_tz = ZoneInfo('Asia/Tehran')
 
         try:
             connection = pymysql.connect(
@@ -36,7 +36,7 @@ class Command(BaseCommand):
                     SELECT *
                     FROM cdr
                     ORDER BY calldate DESC
-                    LIMIT 100
+                    LIMIT 2000
                 """)
                 rows = cursor.fetchall()
 
@@ -75,8 +75,8 @@ class Command(BaseCommand):
                     if call_time:
                         # If naive, localize as Tehran time, then convert to UTC for DB
                         if timezone.is_naive(call_time):
-                            call_time = tehran_tz.localize(call_time)
-                        call_time = call_time.astimezone(timezone.utc)
+                            call_time = call_time.replace(tzinfo=pbx_tz)
+                        call_time = call_time.astimezone(dt_timezone.utc)
                     # --- TIMEZONE FIX END ---
 
                     CallLog.objects.create(

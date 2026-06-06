@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import time
 import asyncio
 import traceback
 from panoramisk import Manager
@@ -15,6 +16,10 @@ from channels.layers import get_channel_layer
 from asgiref.sync import sync_to_async
 from django.core.management import call_command
 from crm.models import Extension, Customer  # <-- Added Customer import
+
+LAST_IMPORT_TIME = 0
+IMPORT_COOLDOWN = 4  # Seconds to wait before allowing another CDR import run
+
 
 # --- ADDED: Helper to identify the caller's real name ---
 def get_caller_info(number):
@@ -178,3 +183,24 @@ if __name__ == '__main__':
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Shutting down listener...")
+
+
+async def trigger_cdr_import():
+    global LAST_IMPORT_TIME
+    
+    # Wait for Asterisk to fully write the CDR logs to disk/database
+    await asyncio.sleep(5)
+    
+    current_time = time.time()
+    # If the last import occurred within our cooldown window, ignore this event
+    if current_time - LAST_IMPORT_TIME < IMPORT_COOLDOWN:
+        print("CDR import throttled to avoid duplicate concurrent executions.")
+        return
+        
+    LAST_IMPORT_TIME = current_time
+    try:
+        print("Call ended. Auto-syncing CDR...")
+        await sync_to_async(call_command)('import_cdr')
+        print("Auto-sync complete.")
+    except Exception as e:
+        print(f"Auto-sync failed: {e}")

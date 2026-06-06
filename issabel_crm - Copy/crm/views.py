@@ -1,7 +1,7 @@
 import os
 from panoramisk import Manager
 from django.db.models import F
-from django.db.models import Q  # This allows us to use 'Q' directly
+from django.db.models import Q 
 from django.conf import settings
 from .models import CallLog, Agent
 from django.shortcuts import render
@@ -18,42 +18,57 @@ def dashboard(request):
 
     inbound_calls = []
     outbound_calls = []
+    search_num = request.GET.get('search_num')
 
     if extension:
         ext_num = str(extension.extension_number).strip()
         
-        # 1. Fetch calls where this agent is either the source or destination
-        query = Q(source_number=ext_num) | Q(destination_number=ext_num)
+        # Smart Query: Look for extension '101' in src, dst, or deep inside Asterisk channels!
+        query = (
+            Q(source_number__icontains=ext_num) | 
+            Q(destination_number__icontains=ext_num) |
+            Q(raw_data__channel__icontains=ext_num) |
+            Q(raw_data__dstchannel__icontains=ext_num)
+        )
 
-        # Apply filters from search bar/dropdowns
-        search_num = request.GET.get('search_num')
         if search_num:
             query &= Q(phone_number__icontains=search_num)
         
-        # Get the raw results
-        raw_calls = CallLog.objects.filter(query).order_by('-call_time')[:40]
+        raw_calls = CallLog.objects.filter(query).order_by('-call_time')[:100]
 
-        # 2. Python-level scrubbing and separation
         for call in raw_calls:
             src = str(call.source_number).strip()
             dst = str(call.destination_number).strip()
+            channel = str(call.raw_data.get('channel', '')) if call.raw_data else ''
 
-            # COMPLETELY IGNORE calls where agent is both source and destination
-            if src == ext_num and dst == ext_num:
+            if ext_num in src and ext_num in dst:
                 continue
 
-            # Separate into lists
-            if dst == ext_num:
+            # Route to respective tables based on extension presence footprint
+            if ext_num in dst or (ext_num in channel and call.call_type == 'incoming'):
                 inbound_calls.append(call)
-            elif src == ext_num:
+            else:
+                outbound_calls.append(call)
+
+    # Fallback for Administrators without an extension profile assigned yet
+    elif is_admin:
+        query = Q()
+        if search_num:
+            query &= Q(phone_number__icontains=search_num)
+            
+        raw_calls = CallLog.objects.filter(query).order_by('-call_time')[:100]
+        for call in raw_calls:
+            if call.call_type == 'incoming':
+                inbound_calls.append(call)
+            else:
                 outbound_calls.append(call)
 
     context = {
         'agent': agent_profile,
         'extension': extension,
         'is_admin': is_admin,
-        'inbound_calls': inbound_calls[:10],  # Show top 10 inbound
-        'outbound_calls': outbound_calls[:10], # Show top 10 outbound
+        'inbound_calls': inbound_calls[:10],  
+        'outbound_calls': outbound_calls[:10], 
         'current_filters': request.GET 
     }
     return render(request, 'crm/agent_dashboard.html', context)
@@ -62,15 +77,20 @@ def dashboard(request):
 @login_required
 def play_recording(request, log_id):
     call_log = CallLog.objects.filter(id=log_id).first()
+    if not call_log:
+        raise Http404("Recording not found.")
     
-    # Security: Ensure the agent only accesses their own recordings or is an admin
-    if not call_log or (not request.user.is_superuser and call_log.destination_number != request.user.agent_profile.extension.extension_number):
-        raise Http404("Recording not found or access denied.")
+    is_admin = request.user.is_superuser or request.user.groups.filter(name='Admin').exists()
+    agent_profile = getattr(request.user, 'agent_profile', None)
+    agent_ext = str(agent_profile.extension.extension_number).strip() if (agent_profile and hasattr(agent_profile, 'extension')) else None
 
-    # In a real setup, this path comes from your Issabel server
-    # For now, we assume the path stored in 'recording_file' is accessible
+    if not is_admin:
+        log_src = str(call_log.source_number).strip()
+        log_dst = str(call_log.destination_number).strip()
+        if not agent_ext or (agent_ext != log_src and agent_ext != log_dst):
+            raise Http404("Recording not found or access denied.")
+
     file_path = call_log.recording_file 
-    
     if file_path and os.path.exists(file_path):
         return FileResponse(open(file_path, 'rb'), content_type='audio/wav')
     
@@ -78,9 +98,10 @@ def play_recording(request, log_id):
 
 
 async def click_to_dial(request, phone_number):
-    # 1. Safely get the user and agent profile in an async-friendly way
     user = await sync_to_async(lambda: request.user)()
-    
+    if not user.is_authenticated:
+        return JsonResponse({'status': 'error', 'message': 'Authentication required'}, status=401)
+
     def get_extension_info():
         profile = getattr(user, 'agent_profile', None)
         if profile and hasattr(profile, 'extension'):
@@ -88,30 +109,29 @@ async def click_to_dial(request, phone_number):
         return None
 
     extension = await sync_to_async(get_extension_info)()
-
     if not extension:
         return JsonResponse({'status': 'error', 'message': 'No extension assigned'}, status=400)
 
-    # FIX: Define 'tech' and 'ext_num' here before they are used below
-    tech = extension.technology  # This will be 'SIP' or 'PJSIP'
-    ext_num = extension.extension_number
+    tech = extension.technology 
+    ext_num = str(extension.extension_number).strip()
 
     manager = Manager(
-    host=settings.AMI_HOST, 
-    port=settings.AMI_PORT, 
-    username=settings.AMI_USER, 
-    secret=settings.AMI_PASS
+        host=settings.AMI_HOST, 
+        port=settings.AMI_PORT, 
+        username=settings.AMI_USER, 
+        secret=settings.AMI_PASS
     )
     
     try:
         await manager.connect()
         action = {
             'Action': 'Originate',
-            'Channel': f'{tech}/{ext_num}', # Now 'tech' is defined!
+            'Channel': f'{tech}/{ext_num}', 
             'Exten': phone_number,
             'Context': 'from-internal',
             'Priority': '1',
-            'CallerID': f"Calling: {phone_number} <{phone_number}>",
+            # FIXED: Tells Asterisk your extension number is the true origin leg of this call session
+            'CallerID': f"CRM Dialing <{ext_num}>", 
             'Async': 'true',
         }
         await manager.send_action(action)
