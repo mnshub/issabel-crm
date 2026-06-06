@@ -189,7 +189,7 @@ async def trigger_cdr_import():
     global LAST_IMPORT_TIME
     
     # Wait for Asterisk to fully write the CDR logs to disk/database
-    await asyncio.sleep(5)
+    await asyncio.sleep(2)
     
     current_time = time.time()
     # If the last import occurred within our cooldown window, ignore this event

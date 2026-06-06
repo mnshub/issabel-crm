@@ -58,9 +58,9 @@ def dashboard(request):
             
         raw_calls = CallLog.objects.filter(query).order_by('-call_time')[:100]
         for call in raw_calls:
-            if call.call_type == 'incoming':
+            if dst == ext_num:
                 inbound_calls.append(call)
-            else:
+            elif src == ext_num:
                 outbound_calls.append(call)
 
     context = {
