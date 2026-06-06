@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import asyncio
 import traceback
@@ -110,8 +111,37 @@ async def call_event_handler(manager, message):
             else:
                 print(f"DEBUG: Extension '{clean_dest}' exists, but has no user assigned.")
 
-        elif message.event == 'Hangup':
-            asyncio.create_task(trigger_cdr_import())
+        elif message.event in ['Hangup', 'Newstate']:
+            # If it's a state change, we only care if the call was answered (State: "Up")
+            if message.event == 'Newstate' and getattr(message, 'channelstatedesc', '') != 'Up':
+                pass # Ignore ringing or down states
+            else:
+                # Extract the extension number from the channel name (e.g., PJSIP/101-00001)
+                channel_name = getattr(message, 'channel', '')
+                match = re.search(r'(?:SIP|PJSIP)/(\d+)-', channel_name, re.IGNORECASE)
+                
+                if match:
+                    ext_num = match.group(1)
+                    clean_ext = str(ext_num).strip()
+                    agent_username = await sync_to_async(get_agent_username)(clean_ext)
+                    
+                    # If this extension belongs to an active CRM agent, clear their popup
+                    if agent_username and agent_username != "NOT_FOUND":
+                        print(f"DEBUG: Call Answered/Rejected for Ext {clean_ext}. Clearing popup.")
+                        channel_layer = get_channel_layer()
+                        await channel_layer.group_send(
+                            f"agent_{agent_username}",
+                            {
+                                "type": "clear_notification"
+                            }
+                        )
+
+            # ALWAYS trigger the CDR sync if the call has completely ended
+            if message.event == 'Hangup':
+                asyncio.create_task(trigger_cdr_import())
+
+
+
 
     except Exception as e:
         print(f"\n❌ FATAL ERROR IN EVENT HANDLER: {e}")
@@ -130,6 +160,7 @@ async def main():
         manager.register_event('DialBegin', call_event_handler)
         manager.register_event('Dial', call_event_handler)
         manager.register_event('Hangup', call_event_handler)
+        manager.register_event('Newstate', call_event_handler)
         
         try:
             print("Connecting to Asterisk AMI...")

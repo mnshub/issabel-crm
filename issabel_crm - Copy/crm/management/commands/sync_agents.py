@@ -2,6 +2,7 @@ import pymysql
 from django.core.management.base import BaseCommand
 from django.contrib.auth.models import User
 from crm.models import Agent, Extension
+from django.conf import settings
 
 class Command(BaseCommand):
     help = "Sync Agents and Extensions from Issabel and link to Django Users"
@@ -9,10 +10,10 @@ class Command(BaseCommand):
     def handle(self, *args, **kwargs):
         try:
             connection = pymysql.connect(
-                host='10.28.0.115',
-                user='crm_reader',
-                password='Admin1234',
-                database='asterisk',
+                host=settings.PBX_DB_HOST,
+                user=settings.PBX_DB_USER,
+                password=settings.PBX_DB_PASS,
+                database='asterisk', # Note: keep 'asteriskcdrdb' for the import_cdr script!
                 cursorclass=pymysql.cursors.DictCursor
             )
         except Exception as e:

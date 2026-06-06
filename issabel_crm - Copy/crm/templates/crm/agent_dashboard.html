@@ -175,12 +175,20 @@
         socket.onmessage = function(e) {
             const data = JSON.parse(e.data);
             const popup = document.getElementById('callPopup');
+
+            // 1. Check if the backend is telling us to clear the popup
+            if (data.action === 'clear') {
+                popup.style.display = 'none';
+                return; // Stop execution here
+            }
+
+            // 2. Otherwise, it's a new call. Show the popup.
             document.getElementById('callerInfo').innerText = data.caller;
             document.getElementById('callerNumber').innerText = "Number: " + data.number;
             popup.style.display = 'block';
-            setTimeout(() => { popup.style.display = 'none'; }, 15000);
         };
 
+        
         function playAudio(logId) {
             const player = document.getElementById('audioPlayer');
             const container = document.getElementById('playerContainer');

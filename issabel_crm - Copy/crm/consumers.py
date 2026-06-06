@@ -51,3 +51,11 @@ class CallConsumer(AsyncWebsocketConsumer):
             'caller': caller,
             'number': number
         }))
+
+
+        # MATCH THE LISTENER: This method MUST match "type": "clear_notification"
+    async def clear_notification(self, event):
+        print(f"DEBUG: Sending clear popup signal to {self.agent_username}")
+        await self.send(text_data=json.dumps({
+            'action': 'clear'
+        }))

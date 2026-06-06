@@ -1,42 +1,38 @@
-
 services:
-  # 1. The Production Database
   db:
     image: postgres:15
     volumes:
       - postgres_data:/var/lib/postgresql/data/
-    environment:
-      - POSTGRES_DB=crm_prod
-      - POSTGRES_USER=crm_user
-      - POSTGRES_PASSWORD=crm_password
+    env_file:             # <-- Tell the database to use the .env file
+      - .env
 
-  # 2. Redis for Django Channels
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
 
-  # 3. The Web Server (Daphne for HTTP & WebSockets)
   web:
     build: .
     command: python -m daphne -b 0.0.0.0 -p 8000 config.asgi:application
     volumes:
       - .:/app
-      - /usr/local/lib/python3.11/site-packages/  # Add this line!
+      - /usr/local/lib/python3.11/site-packages/
     ports:
       - "8000:8000"
+    env_file:             # <-- Tell Django to use the .env file
+      - .env
     depends_on:
       - db
       - redis
       
-      
-   # 4. The AMI Listener (Always running in background)
   ami_listener:
     build: .
     command: python crm/ami_listener.py
     volumes:
       - .:/app
     restart: always
+    env_file:             # <-- Tell the listener to use the .env file
+      - .env
     depends_on:
       - web
       - redis

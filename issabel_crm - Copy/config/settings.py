@@ -95,13 +95,24 @@ ASGI_APPLICATION = 'config.asgi.application'
 # }
 
 
+# DATABASES = {
+#     'default': {
+#         'ENGINE': 'django.db.backends.postgresql',
+#         'NAME': 'crm_prod',
+#         'USER': 'crm_user',
+#         'PASSWORD': 'crm_password',
+#         'HOST': 'db', # Matches the service name in docker-compose
+#         'PORT': '5432',
+#     }
+# }
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'crm_prod',
-        'USER': 'crm_user',
-        'PASSWORD': 'crm_password',
-        'HOST': 'db', # Matches the service name in docker-compose
+        'NAME': os.environ.get('POSTGRES_DB', 'crm_prod'),
+        'USER': os.environ.get('POSTGRES_USER', 'crm_user'),
+        'PASSWORD': os.environ.get('POSTGRES_PASSWORD', 'crm_password'),
+        'HOST': 'db', 
         'PORT': '5432',
     }
 }
@@ -166,7 +177,13 @@ LOGIN_REDIRECT_URL = 'dashboard'
 LOGOUT_REDIRECT_URL = 'login'
 
 # Asterisk AMI Settings
-AMI_HOST = '192.168.100.115'
-AMI_PORT = 5038
-AMI_USER = 'django_crm'
-AMI_PASS = 'Admin1234' # In the future, we will move this to a .env file
+AMI_HOST = os.environ.get('AMI_HOST', '192.168.100.115')
+AMI_PORT = int(os.environ.get('AMI_PORT', 5038))
+AMI_USER = os.environ.get('AMI_USER', 'django_crm')
+AMI_PASS = os.environ.get('AMI_PASS', 'Admin1234')
+
+
+# Issabel DB Settings (for custom management commands)
+PBX_DB_HOST = os.environ.get('PBX_DB_HOST', '192.168.100.115')
+PBX_DB_USER = os.environ.get('PBX_DB_USER', 'crm_reader')
+PBX_DB_PASS = os.environ.get('PBX_DB_PASS', 'Admin1234')

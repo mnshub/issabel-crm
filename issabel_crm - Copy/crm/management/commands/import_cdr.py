@@ -1,6 +1,7 @@
 import pymysql
 import pymysql.err
 from django.core.management.base import BaseCommand
+from config import settings
 from crm.models import CallLog, Customer
 from crm.utils import normalize_phone_number
 from datetime import datetime, date
@@ -16,10 +17,10 @@ class Command(BaseCommand):
         # 1. Attempt to connect to the database. Catch network/auth errors first.
         try:
             connection = pymysql.connect(
-                host='10.28.0.115',
-                user='crm_reader',
-                password='Admin1234',
-                database='asteriskcdrdb',
+                host=settings.PBX_DB_HOST,
+                user=settings.PBX_DB_USER,
+                password=settings.PBX_DB_PASS,
+                database='asterisk', # Note: keep 'asteriskcdrdb' for the import_cdr script!
                 cursorclass=pymysql.cursors.DictCursor
             )
         except pymysql.err.OperationalError as e:
