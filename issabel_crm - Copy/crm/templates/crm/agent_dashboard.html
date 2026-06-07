@@ -39,6 +39,24 @@
         
         .dial-btn { background:none; border:none; cursor:pointer; font-size:16px; transition: transform 0.2s; }
         .dial-btn:hover { transform: scale(1.2); }
+
+        .audio-play-btn {
+            background: #17a2b8;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: bold;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            transition: background 0.2s;
+        }
+        .audio-play-btn:hover {
+            background: #138496;
+        }
     </style>
 </head>
 <body>
@@ -73,6 +91,7 @@
                             <tr>
                                 <th>From</th>
                                 <th>Time</th>
+                                <th>Duration</th>
                                 <th>Status</th>
                                 <th>Rec</th>
                             </tr>
@@ -86,18 +105,28 @@
                                 </td>
                                 <td>{% timezone "Asia/Tehran" %}{{ call.call_time|date:"H:i" }}{% endtimezone %}</td>
                                 <td>
+                                    {% if call.disposition == 'ANSWERED' %}
+                                        {{ call.duration }}s
+                                    {% else %}
+                                        ---
+                                    {% endif %}
+                                </td>
+                                <td>
                                     <span class="status-badge {% if call.disposition == 'ANSWERED' %}answered{% else %}no-answer{% endif %}">
                                         {{ call.disposition }}
                                     </span>
                                 </td>
                                 <td>
-                                    {% if call.recording_file %}
-                                        <button onclick="playAudio('{{ call.id }}')" style="background:#17a2b8; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:10px;">▶</button>
+                                    {% if call.recording_file or call.raw_data.recordingfile or call.raw_data.filename %}
+                                        <button onclick="playAudio('{{ call.id }}')" class="audio-play-btn">
+                                            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;"><path d="M8 5v14l11-7z"/></svg>
+                                            Play
+                                        </button>
                                     {% endif %}
                                 </td>
                             </tr>
                             {% empty %}
-                            <tr><td colspan="4" style="text-align:center; color:#ccc;">No inbound calls.</td></tr>
+                            <tr><td colspan="5" style="text-align:center; color:#ccc;">No inbound calls.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
@@ -110,6 +139,7 @@
                             <tr>
                                 <th>To</th>
                                 <th>Time</th>
+                                <th>Duration</th>
                                 <th>Status</th>
                                 <th>Rec</th>
                             </tr>
@@ -123,18 +153,28 @@
                                 </td>
                                 <td>{% timezone "Asia/Tehran" %}{{ call.call_time|date:"H:i" }}{% endtimezone %}</td>
                                 <td>
+                                    {% if call.disposition == 'ANSWERED' %}
+                                        {{ call.duration }}s
+                                    {% else %}
+                                        ---
+                                    {% endif %}
+                                </td>
+                                <td>
                                     <span class="status-badge {% if call.disposition == 'ANSWERED' %}answered{% else %}no-answer{% endif %}">
                                         {{ call.disposition }}
                                     </span>
                                 </td>
                                 <td>
-                                    {% if call.recording_file %}
-                                        <button onclick="playAudio('{{ call.id }}')" style="background:#17a2b8; color:white; border:none; padding:4px 8px; border-radius:4px; cursor:pointer; font-size:10px;">▶</button>
+                                    {% if call.recording_file or call.raw_data.recordingfile or call.raw_data.filename %}
+                                        <button onclick="playAudio('{{ call.id }}')" class="audio-play-btn">
+                                            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;"><path d="M8 5v14l11-7z"/></svg>
+                                            Play
+                                        </button>
                                     {% endif %}
                                 </td>
                             </tr>
                             {% empty %}
-                            <tr><td colspan="4" style="text-align:center; color:#ccc;">No outbound calls.</td></tr>
+                            <tr><td colspan="5" style="text-align:center; color:#ccc;">No outbound calls.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
@@ -157,11 +197,9 @@
         <button onclick="location.reload();" style="background: none; border: 1px solid #28a745; color: #28a745; padding: 5px 10px; border-radius: 4px; cursor: pointer;">View History</button>
     </div>
 
-    <div id="playerContainer" style="display:none; position:fixed; top:20px; left:50%; transform:translateX(-50%); background:white; padding:15px; border-radius:30px; box-shadow:0 5px 20px rgba(0,0,0,0.2); z-index:2000;">
-        <audio id="audioPlayer" controls>
-            <source src="" type="audio/wav">
-        </audio>
-        <button onclick="document.getElementById('playerContainer').style.display='none'" style="border:none; background:none; color:red; font-weight:bold; cursor:pointer; margin-left:10px;">X</button>
+    <div id="playerContainer" style="display:none; position:fixed; top:20px; left:50%; transform:translateX(-50%); background:white; padding:15px; border-radius:30px; box-shadow:0 5px 20px rgba(0,0,0,0.2); z-index:2000; align-items:center; gap:10px;">
+        <audio id="audioPlayer" controls src=""></audio>
+        <button onclick="stopAndHidePlayer()" style="border:none; background:none; color:red; font-weight:bold; cursor:pointer; margin-left:10px;">X</button>
     </div>
 
     <script>
@@ -182,12 +220,35 @@
             popup.style.display = 'block';
         };
         
+        // Cleaned and Fixed Audio Playback Handler Engine
         function playAudio(logId) {
             const player = document.getElementById('audioPlayer');
             const container = document.getElementById('playerContainer');
+            
+            if (!player || !container) return;
+
+            // Direct assignment onto the main HTML element triggers clean browser re-buffering
             player.src = `/call/play/${logId}/`;
-            container.style.display = 'block';
-            player.play();
+            container.style.display = 'flex';
+            
+            // Force browser to fetch modern content-lengths and parse audio codecs
+            player.load();
+            player.play().catch(function(error) {
+                console.warn("Automated media initialization was deferred by security sandbox policy:", error);
+            });
+        }
+
+        // Clean memory caches and close active media streams
+        function stopAndHidePlayer() {
+            const container = document.getElementById('playerContainer');
+            const player = document.getElementById('audioPlayer');
+            if (player) {
+                player.pause();
+                player.src = ""; 
+            }
+            if (container) {
+                container.style.display = 'none';
+            }
         }
 
         function makeCall(number) {

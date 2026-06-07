@@ -184,10 +184,18 @@ LOGOUT_REDIRECT_URL = 'login'
 AMI_HOST = os.environ.get('AMI_HOST', '192.168.100.115')
 AMI_PORT = int(os.environ.get('AMI_PORT', 5038))
 AMI_USER = os.environ.get('AMI_USER', 'django_crm')
-AMI_PASS = os.environ.get('AMI_PASS', 'Admin1234')
+AMI_PASS = os.environ.get('AMI_PASS', '')
 
 
 # Issabel DB Settings (for custom management commands)
 PBX_DB_HOST = os.environ.get('PBX_DB_HOST', '192.168.100.115')
+PBX_DB_PORT = int(os.environ.get('PBX_DB_PORT', 3306))
+PBX_DB_NAME = os.environ.get('PBX_DB_NAME', 'asteriskcdrdb')
 PBX_DB_USER = os.environ.get('PBX_DB_USER', 'crm_reader')
 PBX_DB_PASS = os.environ.get('PBX_DB_PASS', 'Admin1234')
+
+# Issabel SSH/SFTP Settings (for secure on-demand streaming of call recording audio)
+PBX_SSH_HOST = os.environ.get('PBX_SSH_HOST', '192.168.100.115')
+PBX_SSH_PORT = int(os.environ.get('PBX_SSH_PORT', 22))
+PBX_SSH_USER = os.environ.get('PBX_SSH_USER', 'admin')
+PBX_SSH_PASS = os.environ.get('PBX_SSH_PASS', '')

@@ -1,41 +1,89 @@
 services:
   db:
-    image: postgres:15
+    image: postgres:15-alpine
+    container_name: crm_db
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-crm_prod}
+      - POSTGRES_USER=${POSTGRES_USER:-crm_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-crm_password}
     volumes:
-      - postgres_data:/var/lib/postgresql/data/
-    env_file:             # <-- Tell the database to use the .env file
-      - .env
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: always
 
   redis:
     image: redis:7-alpine
+    container_name: crm_redis
     ports:
       - "6379:6379"
+    restart: always
 
   web:
     build: .
-    command: python -m daphne -b 0.0.0.0 -p 8000 config.asgi:application
+    container_name: crm_web
+    command: daphne -b 0.0.0.0 -p 8000 config.asgi:application
     volumes:
       - .:/app
-      - /usr/local/lib/python3.11/site-packages/
     ports:
       - "8000:8000"
-    env_file:             # <-- Tell Django to use the .env file
-      - .env
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-crm_prod}
+      - POSTGRES_USER=${POSTGRES_USER:-crm_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-crm_password}
+      - SECRET_KEY=${SECRET_KEY:-default-unsafe-key-for-dev}
+      - DEBUG=${DEBUG:-True}
+      - ALLOWED_HOSTS=${ALLOWED_HOSTS:-127.0.0.1,localhost,web}
+      - PBX_SSH_HOST=${PBX_SSH_HOST}
+      - PBX_SSH_PORT=${PBX_SSH_PORT}
+      - PBX_SSH_USER=${PBX_SSH_USER}
+      - PBX_SSH_PASS=${PBX_SSH_PASS}
+      - AMI_HOST=${AMI_HOST}
+      - AMI_PORT=${AMI_PORT}
+      - AMI_USER=${AMI_USER}
+      - AMI_PASS=${AMI_PASS}
+      # Injecting Issabel MySQL Database credentials down into the web service
+      - PBX_DB_HOST=${PBX_DB_HOST}
+      - PBX_DB_PORT=${PBX_DB_PORT}
+      - PBX_DB_NAME=${PBX_DB_NAME}
+      - PBX_DB_USER=${PBX_DB_USER}
+      - PBX_DB_PASS=${PBX_DB_PASS}
     depends_on:
       - db
       - redis
-      
+    restart: always
+
   ami_listener:
     build: .
+    container_name: crm_ami_listener
     command: python crm/ami_listener.py
     volumes:
       - .:/app
-    restart: always
-    env_file:             # <-- Tell the listener to use the .env file
-      - .env
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-crm_prod}
+      - POSTGRES_USER=${POSTGRES_USER:-crm_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-crm_password}
+      - SECRET_KEY=${SECRET_KEY:-default-unsafe-key-for-dev}
+      - DEBUG=${DEBUG:-True}
+      - PBX_SSH_HOST=${PBX_SSH_HOST}
+      - PBX_SSH_PORT=${PBX_SSH_PORT}
+      - PBX_SSH_USER=${PBX_SSH_USER}
+      - PBX_SSH_PASS=${PBX_SSH_PASS}
+      - AMI_HOST=${AMI_HOST}
+      - AMI_PORT=${AMI_PORT}
+      - AMI_USER=${AMI_USER}
+      - AMI_PASS=${AMI_PASS}
+      # Injecting Issabel MySQL Database credentials down into the background tracking daemon
+      - PBX_DB_HOST=${PBX_DB_HOST}
+      - PBX_DB_PORT=${PBX_DB_PORT}
+      - PBX_DB_NAME=${PBX_DB_NAME}
+      - PBX_DB_USER=${PBX_DB_USER}
+      - PBX_DB_PASS=${PBX_DB_PASS}
     depends_on:
-      - web
+      - db
       - redis
+      - web
+    restart: always
 
 volumes:
   postgres_data:

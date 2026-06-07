@@ -13,9 +13,9 @@ class Command(BaseCommand):
 
     def handle(self, *args, **kwargs):
         imported = 0
+        updated_recordings = 0
         skipped = 0
         
-
         pbx_tz = ZoneInfo('Asia/Tehran')
 
         try:
@@ -42,9 +42,36 @@ class Command(BaseCommand):
 
                 for row in rows:
                     uniqueid = row.get('uniqueid')
-                    if not uniqueid or CallLog.objects.filter(uniqueid=uniqueid).exists():
+                    if not uniqueid:
                         skipped += 1
                         continue
+
+                    # --- DETECT RECORDING FILENAME FROM ISSABEL ---
+                    # Checks both the native 'recordingfile' field and alternative 'userfield' properties
+                    recording_filename = str(row.get('recordingfile', '') or '').strip()
+                    if not recording_filename and row.get('userfield'):
+                        userfield_str = str(row.get('userfield', ''))
+                        if 'audio:' in userfield_str:
+                            recording_filename = userfield_str.replace('audio:', '').strip()
+                        elif any(userfield_str.lower().endswith(ext) for ext in ['.wav', '.mp3', '.gsm']):
+                            recording_filename = userfield_str.strip()
+
+                    # --- SMART RESYNC: RESOLVE THE RACE CONDITION ---
+                    existing_log = CallLog.objects.filter(uniqueid=uniqueid).first()
+                    if existing_log:
+                        # If the log already has a recording file associated, skip processing safely
+                        if existing_log.recording_file:
+                            skipped += 1
+                            continue
+                        # If the log is missing its recording file but Issabel has populated it now, UPDATE it!
+                        elif recording_filename:
+                            existing_log.recording_file = recording_filename
+                            existing_log.save()
+                            updated_recordings += 1
+                            continue
+                        else:
+                            skipped += 1
+                            continue
 
                     src = normalize_phone_number(row.get('src', ''))
                     dst = normalize_phone_number(row.get('dst', ''))
@@ -52,7 +79,7 @@ class Command(BaseCommand):
                     customer = Customer.objects.filter(phone_number=src).first() or \
                                Customer.objects.filter(phone_number=dst).first()
 
-                    # simple call type detection
+                    # Simple call type detection
                     if src.startswith('0') and not dst.startswith('0'):
                         call_type = 'incoming'
                         phone_number = src
@@ -70,14 +97,12 @@ class Command(BaseCommand):
                         else:
                             safe_row[key] = value
 
-                    # --- TIMEZONE FIX START ---
+                    # --- TIMEZONE LOGIC ---
                     call_time = row.get('calldate')
                     if call_time:
-                        # If naive, localize as Tehran time, then convert to UTC for DB
                         if timezone.is_naive(call_time):
                             call_time = call_time.replace(tzinfo=pbx_tz)
                         call_time = call_time.astimezone(dt_timezone.utc)
-                    # --- TIMEZONE FIX END ---
 
                     CallLog.objects.create(
                         customer=customer,
@@ -88,6 +113,7 @@ class Command(BaseCommand):
                         duration=row.get('duration') or 0,
                         billsec=row.get('billsec') or 0,
                         call_time=call_time,
+                        recording_file=recording_filename,
                         disposition=(row.get('disposition') or 'UNKNOWN').upper(),
                         uniqueid=uniqueid,
                         linkedid=row.get('linkedid'),
@@ -100,4 +126,6 @@ class Command(BaseCommand):
         finally:
             connection.close()
 
-        self.stdout.write(self.style.SUCCESS(f"Import complete. Imported: {imported}, Skipped: {skipped}"))
+        self.stdout.write(self.style.SUCCESS(
+            f"Import complete. Imported: {imported}, Updated Recordings: {updated_recordings}, Skipped: {skipped}"
+        ))
