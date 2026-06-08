@@ -32,6 +32,6 @@ urlpatterns = [
     path('call/customer/save/', views.save_customer, name='save_customer'),
 ]
 
-# This is the "magic" line for development
-if settings.DEBUG:
-    urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
+# # This is the "magic" line for development
+# if settings.DEBUG:
+#     urlpatterns += static(settings.STATIC_URL, document_root=settings.STATIC_ROOT)
