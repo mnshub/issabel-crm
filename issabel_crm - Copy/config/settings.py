@@ -199,3 +199,7 @@ PBX_SSH_HOST = os.environ.get('PBX_SSH_HOST', '192.168.100.115')
 PBX_SSH_PORT = int(os.environ.get('PBX_SSH_PORT', 22))
 PBX_SSH_USER = os.environ.get('PBX_SSH_USER', 'admin')
 PBX_SSH_PASS = os.environ.get('PBX_SSH_PASS', '')
+
+
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

@@ -1,3 +1,4 @@
+# crm/admin.py
 from django.contrib import admin
 from .models import Customer, Agent, Extension, CallLog
 
@@ -6,19 +7,19 @@ from .models import Customer, Agent, Extension, CallLog
 class CustomerAdmin(admin.ModelAdmin):
     list_display = (
         'id',
+        'phone_number',
         'first_name',
         'last_name',
-        'phone_number',
         'email',
-        'company',
+        'company_name',
         'created_at',
     )
     search_fields = (
+        'phone_number',
         'first_name',
         'last_name',
-        'phone_number',
         'email',
-        'company',
+        'company_name',
     )
     list_filter = (
         'created_at',
@@ -33,21 +34,21 @@ class AgentAdmin(admin.ModelAdmin):
     list_display = (
         'id',
         'full_name',
-        'email',
-        'is_active',
-        'created_at',
+        'get_email',
+        'extension',
     )
     search_fields = (
         'full_name',
-        'email',
+        'user__email',
+        'user__username',
     )
-    list_filter = (
-        'is_active',
-        'created_at',
-    )
-    ordering = (
-        '-created_at',
-    )
+    
+    # Custom relational getter method to display the linked auth user email securely
+    def get_email(self, obj):
+        if obj.user and obj.user.email:
+            return obj.user.email
+        return "No user email linked"
+    get_email.short_description = 'Corporate Email'
 
 
 @admin.register(Extension)
@@ -55,17 +56,14 @@ class ExtensionAdmin(admin.ModelAdmin):
     list_display = (
         'id',
         'extension_number',
-        'agent',
         'technology',
-        'is_active',
+        'created_at',
     )
     search_fields = (
         'extension_number',
-        'agent__full_name',
     )
     list_filter = (
         'technology',
-        'is_active',
     )
 
 
@@ -77,11 +75,12 @@ class CallLogAdmin(admin.ModelAdmin):
         'source_number',
         'destination_number',
         'call_type',
-        'agent',
-        'extension',
+        'customer',
         'duration',
         'billsec',
         'disposition',
+        'business_disposition',
+        'wrapup_completed',
         'uniqueid',
         'call_time',
     )
@@ -90,7 +89,6 @@ class CallLogAdmin(admin.ModelAdmin):
         'phone_number',
         'source_number',
         'destination_number',
-        'agent__full_name',
         'uniqueid',
         'linkedid',
     )
@@ -98,6 +96,8 @@ class CallLogAdmin(admin.ModelAdmin):
     list_filter = (
         'call_type',
         'disposition',
+        'business_disposition',
+        'wrapup_completed',
         'call_time',
         'created_at',
     )
@@ -110,10 +110,6 @@ class CallLogAdmin(admin.ModelAdmin):
         'linkedid',
         'raw_data',
         'created_at',
-    )
-
-    exclude = (
-        'extension',
     )
 
     ordering = (

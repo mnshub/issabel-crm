@@ -15,13 +15,13 @@ from django.conf import settings
 from channels.layers import get_channel_layer
 from asgiref.sync import sync_to_async
 from django.core.management import call_command
-from crm.models import Extension, Customer  # <-- Added Customer import
+from crm.models import Extension, Customer  
 
 LAST_IMPORT_TIME = 0
 IMPORT_COOLDOWN = 4  # Seconds to wait before allowing another CDR import run
 
 
-# --- ADDED: Helper to identify the caller's real name ---
+# --- Helper to identify the caller's real name ---
 def get_caller_info(number):
     """Checks if a number belongs to an internal agent or a saved customer."""
     clean_num = str(number).strip()
@@ -47,14 +47,11 @@ def get_caller_info(number):
     return "Unknown Caller"
 # --------------------------------------------------------
 
-# --- THE FIX: Fully synchronous DB helper function ---
+# --- Fully synchronous DB helper function ---
 def get_agent_username(ext_num):
     """Safely fetches the username linked to an extension using correct model fields."""
     try:
-        # Use 'agent__user' because your Extension model has a field named 'agent'
         ext = Extension.objects.select_related('agent__user').get(extension_number=ext_num)
-        
-        # Access the 'agent' field (not agent_profile)
         agent = getattr(ext, 'agent', None)
         if agent and agent.user:
             return agent.user.username
@@ -67,7 +64,18 @@ def get_agent_username(ext_num):
 # ---------------------------------------------------
 
 async def trigger_cdr_import():
+    global LAST_IMPORT_TIME
+    
+    # Wait for Asterisk to fully write the CDR logs to disk/database
     await asyncio.sleep(2)
+    
+    current_time = time.time()
+    # If the last import occurred within our cooldown window, ignore this event
+    if current_time - LAST_IMPORT_TIME < IMPORT_COOLDOWN:
+        print("CDR import throttled to avoid duplicate concurrent executions.")
+        return
+        
+    LAST_IMPORT_TIME = current_time
     try:
         print("Call ended. Auto-syncing CDR...")
         await sync_to_async(call_command)('import_cdr')
@@ -92,23 +100,25 @@ async def call_event_handler(manager, message):
                 return
 
             clean_dest = str(dest_num).strip()
-            clean_caller = str(caller_num).strip() # Clean the caller number
+            clean_caller = str(caller_num).strip() 
             
             # Call the synchronous helpers safely
             agent_username = await sync_to_async(get_agent_username)(clean_dest)
-            caller_name = await sync_to_async(get_caller_info)(clean_caller) # Look up the real name
+            caller_name = await sync_to_async(get_caller_info)(clean_caller) 
             
             if agent_username == "NOT_FOUND":
                 print(f"DEBUG: Extension '{clean_dest}' not found in CRM database. Ignoring.")
             elif agent_username:
-                print(f"DEBUG: Found agent '{agent_username}'. Sending popup to browser...")
+                # THE CRITICAL FIX: Route to the Extension room, not the Agent room
+                group_name = f"extension_{clean_dest}"
+                print(f"DEBUG: Found agent '{agent_username}'. Sending popup to browser in room: {group_name}...")
                 
                 channel_layer = get_channel_layer()
                 await channel_layer.group_send(
-                    f"agent_{agent_username}",
+                    group_name,
                     {
                         "type": "call_notification",
-                        "caller": caller_name,  # <-- Replaced "Unknown" with the real name
+                        "caller": caller_name,
                         "number": clean_caller
                     }
                 )
@@ -132,10 +142,12 @@ async def call_event_handler(manager, message):
                     
                     # If this extension belongs to an active CRM agent, clear their popup
                     if agent_username and agent_username != "NOT_FOUND":
-                        print(f"DEBUG: Call Answered/Rejected for Ext {clean_ext}. Clearing popup.")
+                        # THE CRITICAL FIX 2: Clear from the Extension room
+                        group_name = f"extension_{clean_ext}"
+                        print(f"DEBUG: Call Answered/Rejected for Ext {clean_ext}. Clearing popup in room: {group_name}.")
                         channel_layer = get_channel_layer()
                         await channel_layer.group_send(
-                            f"agent_{agent_username}",
+                            group_name,
                             {
                                 "type": "clear_notification"
                             }
@@ -144,9 +156,6 @@ async def call_event_handler(manager, message):
             # ALWAYS trigger the CDR sync if the call has completely ended
             if message.event == 'Hangup':
                 asyncio.create_task(trigger_cdr_import())
-
-
-
 
     except Exception as e:
         print(f"\n❌ FATAL ERROR IN EVENT HANDLER: {e}")
@@ -183,24 +192,3 @@ if __name__ == '__main__':
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Shutting down listener...")
-
-
-async def trigger_cdr_import():
-    global LAST_IMPORT_TIME
-    
-    # Wait for Asterisk to fully write the CDR logs to disk/database
-    await asyncio.sleep(2)
-    
-    current_time = time.time()
-    # If the last import occurred within our cooldown window, ignore this event
-    if current_time - LAST_IMPORT_TIME < IMPORT_COOLDOWN:
-        print("CDR import throttled to avoid duplicate concurrent executions.")
-        return
-        
-    LAST_IMPORT_TIME = current_time
-    try:
-        print("Call ended. Auto-syncing CDR...")
-        await sync_to_async(call_command)('import_cdr')
-        print("Auto-sync complete.")
-    except Exception as e:
-        print(f"Auto-sync failed: {e}")

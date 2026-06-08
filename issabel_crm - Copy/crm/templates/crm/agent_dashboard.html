@@ -4,10 +4,10 @@
 <head>
     <title>Agent Workspace</title>
     <style>
-        body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; padding: 20px; margin: 0; }
+        body { font-family: 'Segoe UI', sans-serif; background: #f4f7f6; padding: 20px; margin: 0; overflow-x: hidden; }
         .nav { background: #333; color: white; padding: 15px; display: flex; justify-content: space-between; border-radius: 8px; margin-bottom: 20px; }
         .nav a { color: #ff4757; text-decoration: none; font-weight: bold; }
-        .container { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; }
+        .container { display: grid; grid-template-columns: 2fr 1fr; gap: 20px; transition: margin-right 0.3s ease; }
         .card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); margin-bottom: 20px; }
         
         table { width: 100%; border-collapse: collapse; margin-top: 15px; }
@@ -30,33 +30,35 @@
             width: 320px; background: white; border-radius: 12px;
             box-shadow: 0 10px 25px rgba(0,0,0,0.2); padding: 20px;
             border-left: 8px solid #28a745; animation: slideIn 0.3s ease-out;
-            z-index: 1000;
+            z-index: 9999;
         }
         @keyframes slideIn { from { transform: translateX(100%); } to { transform: translateX(0); } }
         
         .live-indicator { height: 10px; width: 10px; background-color: #28a745; border-radius: 50%; display: inline-block; margin-right: 5px; animation: pulse 1.5s infinite; }
         @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
         
-        .dial-btn { background:none; border:none; cursor:pointer; font-size:16px; transition: transform 0.2s; }
+        .dial-btn { background:none; border:none; cursor:pointer; font-size:16px; transition: transform 0.2s; vertical-align: middle; }
         .dial-btn:hover { transform: scale(1.2); }
+        .clickable-phone { color: #007bff; cursor: pointer; text-decoration: underline; font-weight: bold; }
 
         .audio-play-btn {
-            background: #17a2b8;
-            color: white;
-            border: none;
-            padding: 5px 10px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 11px;
-            font-weight: bold;
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-            transition: background 0.2s;
+            background: #17a2b8; color: white; border: none; padding: 5px 10px; border-radius: 4px;
+            cursor: pointer; font-size: 11px; font-weight: bold; display: inline-flex; align-items: center; gap: 4px; transition: background 0.2s;
         }
-        .audio-play-btn:hover {
-            background: #138496;
+        .audio-play-btn:hover { background: #138496; }
+
+        .crm-drawer {
+            position: fixed; top: 0; right: 0; width: 400px; height: 100%;
+            background: white; box-shadow: -5px 0 30px rgba(0,0,0,0.15);
+            z-index: 3000; transform: translateX(100%); transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+            padding: 25px; box-sizing: border-box; display: flex; flex-direction: column;
         }
+        .crm-drawer.open { transform: translateX(0); }
+        .drawer-close-btn { position: absolute; top: 20px; left: 20px; background: none; border: none; font-size: 20px; color: #888; cursor: pointer; font-weight: bold; }
+        .drawer-content { margin-top: 30px; flex: 1; overflow-y: auto; }
+        .timeline-item { border-left: 3px solid #007bff; padding-left: 15px; margin-bottom: 15px; position: relative; font-size: 12px; }
+        .timeline-item::before { content: ''; position: absolute; left: -7px; top: 3px; width: 11px; height: 11px; background: #007bff; border-radius: 50%; }
+        .timeline-time { color: #888; font-weight: bold; margin-bottom: 3px; }
     </style>
 </head>
 <body>
@@ -65,7 +67,7 @@
         <a href="{% url 'logout' %}">Logout</a>
     </div>
 
-    <div class="container">
+    <div class="container" id="mainContainer">
         <div class="left-col">
             <div class="card">
                 <h2><span class="live-indicator"></span>Agent Workspace</h2>
@@ -96,37 +98,26 @@
                                 <th>Rec</th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody id="inboundTableBody">
                             {% for call in inbound_calls %}
                             <tr>
                                 <td>
-                                    <strong>{{ call.source_number }}</strong>
+                                    <span class="clickable-phone" onclick="openCustomerDrawer('{{ call.source_number }}')">{{ call.source_display }}</span>
                                     <button onclick="makeCall('{{ call.source_number }}')" class="dial-btn">📞</button>
                                 </td>
                                 <td>{% timezone "Asia/Tehran" %}{{ call.call_time|date:"H:i" }}{% endtimezone %}</td>
+                                <td>{% if call.disposition == 'ANSWERED' %}{{ call.duration }}s{% else %}---{% endif %}</td>
+                                <td><span class="status-badge {% if call.disposition == 'ANSWERED' %}answered{% else %}no-answer{% endif %}">{{ call.disposition }}</span></td>
                                 <td>
-                                    {% if call.disposition == 'ANSWERED' %}
-                                        {{ call.duration }}s
-                                    {% else %}
-                                        ---
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    <span class="status-badge {% if call.disposition == 'ANSWERED' %}answered{% else %}no-answer{% endif %}">
-                                        {{ call.disposition }}
-                                    </span>
-                                </td>
-                                <td>
-                                    {% if call.recording_file or call.raw_data.recordingfile or call.raw_data.filename %}
+                                    {% if call.recording_file or call.raw_data.recordingfile or call.raw_data.filename or call.disposition == 'ANSWERED' %}
                                         <button onclick="playAudio('{{ call.id }}')" class="audio-play-btn">
-                                            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;"><path d="M8 5v14l11-7z"/></svg>
-                                            Play
+                                            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;"><path d="M8 5v14l11-7z"/></svg> Play
                                         </button>
                                     {% endif %}
                                 </td>
                             </tr>
                             {% empty %}
-                            <tr><td colspan="5" style="text-align:center; color:#ccc;">No inbound calls.</td></tr>
+                            <tr id="inboundEmptyRow"><td colspan="5" style="text-align:center; color:#ccc;">No inbound calls.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
@@ -144,37 +135,26 @@
                                 <th>Rec</th>
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody id="outboundTableBody">
                             {% for call in outbound_calls %}
                             <tr>
                                 <td>
-                                    <strong>{{ call.destination_number }}</strong>
+                                    <span class="clickable-phone" onclick="openCustomerDrawer('{{ call.destination_number }}')">{{ call.destination_display }}</span>
                                     <button onclick="makeCall('{{ call.destination_number }}')" class="dial-btn">📞</button>
                                 </td>
                                 <td>{% timezone "Asia/Tehran" %}{{ call.call_time|date:"H:i" }}{% endtimezone %}</td>
+                                <td>{% if call.disposition == 'ANSWERED' %}{{ call.duration }}s{% else %}---{% endif %}</td>
+                                <td><span class="status-badge {% if call.disposition == 'ANSWERED' %}answered{% else %}no-answer{% endif %}">{{ call.disposition }}</span></td>
                                 <td>
-                                    {% if call.disposition == 'ANSWERED' %}
-                                        {{ call.duration }}s
-                                    {% else %}
-                                        ---
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    <span class="status-badge {% if call.disposition == 'ANSWERED' %}answered{% else %}no-answer{% endif %}">
-                                        {{ call.disposition }}
-                                    </span>
-                                </td>
-                                <td>
-                                    {% if call.recording_file or call.raw_data.recordingfile or call.raw_data.filename %}
+                                    {% if call.recording_file or call.raw_data.recordingfile or call.raw_data.filename or call.disposition == 'ANSWERED' %}
                                         <button onclick="playAudio('{{ call.id }}')" class="audio-play-btn">
-                                            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;"><path d="M8 5v14l11-7z"/></svg>
-                                            Play
+                                            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;"><path d="M8 5v14l11-7z"/></svg> Play
                                         </button>
                                     {% endif %}
                                 </td>
                             </tr>
                             {% empty %}
-                            <tr><td colspan="5" style="text-align:center; color:#ccc;">No outbound calls.</td></tr>
+                            <tr id="outboundEmptyRow"><td colspan="5" style="text-align:center; color:#ccc;">No outbound calls.</td></tr>
                             {% endfor %}
                         </tbody>
                     </table>
@@ -202,43 +182,190 @@
         <button onclick="stopAndHidePlayer()" style="border:none; background:none; color:red; font-weight:bold; cursor:pointer; margin-left:10px;">X</button>
     </div>
 
+    <div id="customerDrawer" class="crm-drawer">
+        <button class="drawer-close-btn" onclick="closeCustomerDrawer()">X</button>
+        <div class="drawer-content" id="drawerContent"></div>
+    </div>
+
     <script>
         const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
         const socket = new WebSocket(protocol + window.location.host + '/ws/calls/');
 
-        socket.onmessage = function(e) {
-            const data = JSON.parse(e.data);
-            const popup = document.getElementById('callPopup');
-
-            if (data.action === 'clear') {
-                popup.style.display = 'none';
-                return;
-            }
-
-            document.getElementById('callerInfo').innerText = data.caller;
-            document.getElementById('callerNumber').innerText = "Number: " + data.number;
-            popup.style.display = 'block';
-        };
+        // --- CORE SYSTEM DIAGNOSTIC LOGS ---
+        console.log("🚀 DIAGNOSTIC: Socket pipeline pointing directly to: " + protocol + window.location.host + '/ws/calls/');
         
-        // Cleaned and Fixed Audio Playback Handler Engine
-        function playAudio(logId) {
-            const player = document.getElementById('audioPlayer');
-            const container = document.getElementById('playerContainer');
-            
-            if (!player || !container) return;
+        socket.onopen = function() {
+            console.log("✅ DIAGNOSTIC: Active WebSocket channel opened successfully!");
+        };
 
-            // Direct assignment onto the main HTML element triggers clean browser re-buffering
-            player.src = `/call/play/${logId}/`;
-            container.style.display = 'flex';
+        socket.onmessage = function(e) {
+            console.log("⚓ DIAGNOSTIC: Raw network packet intercepted:", e.data);
             
-            // Force browser to fetch modern content-lengths and parse audio codecs
-            player.load();
-            player.play().catch(function(error) {
-                console.warn("Automated media initialization was deferred by security sandbox policy:", error);
+            try {
+                const data = JSON.parse(e.data);
+                
+                if (data.type === 'call_ringing') { 
+                    console.log("🚨 MATCH DETECTED: Rendering incoming Call Popup Card...");
+                    const popup = document.getElementById('callPopup');
+                    if (popup) {
+                        document.getElementById('callerInfo').innerText = data.caller;
+                        document.getElementById('callerNumber').innerText = "Number: " + data.number;
+                        popup.style.setProperty('display', 'block', 'important'); 
+                    } else {
+                        console.error("❌ UI FAULT: Element 'callPopup' missing from DOM tree.");
+                    }
+                } 
+                else if (data.type === 'clear_notification') {
+                    console.log("❌ MATCH DETECTED: Clearing Call Popup Card...");
+                    const popup = document.getElementById('callPopup');
+                    if (popup) {
+                        popup.style.setProperty('display', 'none', 'important');
+                    }
+                }
+            } catch (err) {
+                console.error("❌ PARSE FAULT: Failed to process WebSocket frame:", err);
+            }
+        };
+
+        function openCustomerDrawer(phoneNumber) {
+            const drawer = document.getElementById('customerDrawer');
+            const container = document.getElementById('mainContainer');
+            const content = document.getElementById('drawerContent');
+            
+            content.innerHTML = '<p style="text-align:center; color:#666; margin-top:50px;">Querying corporate record registries...</p>';
+            drawer.classList.add('open');
+            container.style.marginRight = '400px';
+
+            fetch(`/call/customer/lookup/${phoneNumber}/`)
+                .then(response => response.json())
+                .then(data => {
+                    let html = '';
+                    
+                    if (data.status === 'agent') {
+                        html += `
+                            <h2 style="color:#28a745; margin-bottom:5px;">${data.full_name}</h2>
+                            <p style="font-size:16px; font-weight:bold; color:#555; margin:0 0 -5px 0;">☎️ Internal Extension: ${data.phone_number}</p>
+                            <p style="font-size:13px; color:#666; margin:12px 0 5px 0;">✉️ ${data.email}</p>
+                            <div class="card" style="background:#e2f0d9; border-left:4px solid #28a745; padding:10px; font-size:13px; color:#385723; margin-top:15px;">
+                                🏢 ${data.company}
+                            </div>
+                        `;
+                    } else if (data.status === 'not_found') {
+                        html += `
+                            <h2 style="color:#ff4757; margin-bottom:15px;">Add New Contact</h2>
+                            <div class="card" style="padding:15px; background:#f9f9f9; border:1px solid #ddd;">
+                                <form id="quickSaveForm" onsubmit="submitCustomerProfile(event, '${data.phone_number}')" style="display:flex; flex-direction:column; gap:10px;">
+                                    <div class="filter-group">
+                                        <label>Phone Line</label>
+                                        <input type="text" class="filter-input" value="${data.phone_number}" disabled style="background:#eee; color:#666;">
+                                    </div>
+                                    <div class="filter-group">
+                                        <label>First Name</label>
+                                        <input type="text" id="form_first_name" class="filter-input" required placeholder="e.g. Mohammad">
+                                    </div>
+                                    <div class="filter-group">
+                                        <label>Last Name</label>
+                                        <input type="text" id="form_last_name" class="filter-input" placeholder="e.g. Mansouri">
+                                    </div>
+                                    <div class="filter-group">
+                                        <label>Email Address</label>
+                                        <input type="email" id="form_email" class="filter-input" placeholder="name@company.com">
+                                    </div>
+                                    <div class="filter-group">
+                                        <label>Company Name</label>
+                                        <input type="text" id="form_company_name" class="filter-input" placeholder="Enterprise Labs">
+                                    </div>
+                                    <button type="submit" style="margin-top:10px; padding:10px; background:#007bff; color:white; border:none; border-radius:4px; font-weight:bold; cursor:pointer;">Save Profile</button>
+                                </form>
+                            </div>
+                        `;
+                    } else {
+                        html += `
+                            <h2 style="color:#007bff; margin-bottom:5px;">${data.first_name} ${data.last_name}</h2>
+                            <p style="font-size:16px; font-weight:bold; color:#555; margin:0 0 -5px 0;">📞 ${data.phone_number}</p>
+                            <p style="font-size:13px; color:#666; margin:12px 0 5px 0;">✉️ ${data.email || 'No email registered'}</p>
+                            <p style="font-size:13px; color:#666; margin:5px 0 25px 0;">🏢 ${data.company || 'Private Customer'}</p>
+                        `;
+                    }
+
+                    html += `<h3 style="border-bottom:2px solid #eee; padding-bottom:8px; margin-top:30px;">Communication Timeline</h3>`;
+                    if (data.timeline.length === 0) {
+                        html += `<p style="color:#ccc; text-align:center; margin-top:20px;">No historical call records discoverable.</p>`;
+                    } else {
+                        data.timeline.forEach(log => {
+                            const directionBadge = log.call_type === 'incoming' ? '📥 Inbound' : '📤 Outbound';
+                            const badgeColor = log.disposition === 'ANSWERED' ? '#28a745' : '#dc3545';
+                            let playBtnHtml = '';
+                            if (log.disposition === 'ANSWERED') {
+                                playBtnHtml = `<button onclick="playAudio('${log.id}')" class="audio-play-btn" style="margin-top:5px; font-size:10px; padding:2px 6px;"><svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> Play Rec</button>`;
+                            }
+                            
+                            html += `
+                                <div class="timeline-item">
+                                    <div class="timeline-time">${log.call_time}</div>
+                                    <div style="font-weight:bold; color:#333;">${directionBadge} (${log.duration})</div>
+                                    <div style="font-size:11px; color:${badgeColor}; font-weight:bold;">Status: ${log.disposition}</div>
+                                    ${playBtnHtml}
+                                </div>
+                            `;
+                        });
+                    }
+                    content.innerHTML = html;
+                })
+                .catch(err => {
+                    content.innerHTML = `<p style="color:red; text-align:center;">Handshake retrieval failed: ${err}</p>`;
+                });
+        }
+
+        function submitCustomerProfile(event, phoneNumber) {
+            event.preventDefault();
+            const payload = {
+                phone_number: phoneNumber,
+                first_name: document.getElementById('form_first_name').value,
+                last_name: document.getElementById('form_last_name').value,
+                email: document.getElementById('form_email').value,
+                company_name: document.getElementById('form_company_name').value
+            };
+
+            fetch('/call/customer/save/', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-CSRFToken': '{{ csrf_token }}'
+                },
+                body: JSON.stringify(payload)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    alert(data.message);
+                    openCustomerDrawer(phoneNumber);
+                } else {
+                    alert("Error saving record: " + data.message);
+                }
+            })
+            .catch(err => {
+                alert("Network communication timeout fault: " + err);
             });
         }
 
-        // Clean memory caches and close active media streams
+        function closeCustomerDrawer() {
+            document.getElementById('customerDrawer').classList.remove('open');
+            document.getElementById('mainContainer').style.marginRight = '0';
+        }
+        
+        function playAudio(logId) {
+            const player = document.getElementById('audioPlayer');
+            const container = document.getElementById('playerContainer');
+            if (!player || !container) return;
+            player.src = `/call/play/${logId}/`;
+            container.style.display = 'flex';
+            player.load();
+            player.play().catch(function(error) {
+                console.warn("Media auto-play deferred by browser sandbox strategy:", error);
+            });
+        }
+
         function stopAndHidePlayer() {
             const container = document.getElementById('playerContainer');
             const player = document.getElementById('audioPlayer');
@@ -246,9 +373,7 @@
                 player.pause();
                 player.src = ""; 
             }
-            if (container) {
-                container.style.display = 'none';
-            }
+            if (container) container.style.display = 'none';
         }
 
         function makeCall(number) {

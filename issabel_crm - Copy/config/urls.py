@@ -28,6 +28,8 @@ urlpatterns = [
     path('logout/', auth_views.LogoutView.as_view(next_page='login'), name='logout'),
     path('call/play/<int:log_id>/', views.play_recording, name='play_recording'),
     path('call/dial/<str:phone_number>/', views.click_to_dial, name='click_to_dial'),
+    path('call/customer/lookup/<str:phone_number>/', views.customer_lookup, name='customer_lookup'),
+    path('call/customer/save/', views.save_customer, name='save_customer'),
 ]
 
 # This is the "magic" line for development

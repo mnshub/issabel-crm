@@ -1,61 +1,53 @@
-# crm/consumers.py
 import json
 from channels.generic.websocket import AsyncWebsocketConsumer
+from asgiref.sync import sync_to_async
 
 class CallConsumer(AsyncWebsocketConsumer):
     async def connect(self):
-        print("DEBUG: Connection initiated...")
+        self.user = self.scope["user"]
         
-        # Check the user
-        user = self.scope.get('user')
-        print(f"DEBUG: User in WebSocket scope is: {user}")
-        
-        # Reject unauthenticated connections
-        if not user or user.is_anonymous:
-            print("DEBUG: Connection rejected - User is Anonymous. Check your session/cookies.")
+        if self.user.is_anonymous:
             await self.close()
             return
 
-        # MATCH THE LISTENER: Use the username instead of the user ID
-        self.agent_username = user.username
-        self.group_name = f"agent_{self.agent_username}"
-
+        # Dynamically find the extension to join the correct room
         try:
-            print(f"DEBUG: Attempting to join group {self.group_name}...")
-            # Join the group
-            await self.channel_layer.group_add(
+            from crm.models import Agent
+            agent = await sync_to_async(Agent.objects.select_related('extension').get)(user=self.user)
+            ext_num = agent.extension.extension_number
+            self.group_name = f"extension_{ext_num}"
+        except Exception as e:
+            print(f"DEBUG Consumer: Could not find extension for {self.user.username}: {e}")
+            self.group_name = f"agent_{self.user.username}" # Fallback
+
+        await self.channel_layer.group_add(
+            self.group_name,
+            self.channel_name
+        )
+        await self.accept()
+        print(f"✅ WS CONNECTED: User {self.user.username} joined {self.group_name}")
+
+    async def disconnect(self, close_code):
+        if hasattr(self, 'group_name'):
+            await self.channel_layer.group_discard(
                 self.group_name,
                 self.channel_name
             )
-            await self.accept()
-            print(f"✅ WS CONNECTED: User {self.agent_username} joined {self.group_name}")
-        except Exception as e:
-            print(f"❌ CHANNEL LAYER ERROR: {e}")
-            await self.close() # Close connection on error
 
-    async def disconnect(self, close_code):
-        print(f"DEBUG: WebSocket disconnected with code: {close_code}")
-        try:
-            await self.channel_layer.group_discard(self.group_name, self.channel_name)
-        except:
-            pass
+    # --- THE HANDLERS: These catch the listener's messages and push them to the browser ---
 
-    # MATCH THE LISTENER: This method name MUST match "type": "call_notification"
     async def call_notification(self, event):
-        # Extract the data sent from ami_listener.py
-        caller = event.get('caller', 'Unknown')
-        number = event.get('number', 'Unknown')
-
-        # Send it down the WebSocket to the browser's JavaScript
+        """Catches 'call_notification' from AMI Listener and sends it to JS"""
+        print(f"DEBUG Consumer: Pushing RINGING event to browser for {self.group_name}")
         await self.send(text_data=json.dumps({
-            'caller': caller,
-            'number': number
+            'type': 'call_ringing', 
+            'caller': event.get('caller', 'Unknown'),
+            'number': event.get('number', 'Unknown')
         }))
 
-
-        # MATCH THE LISTENER: This method MUST match "type": "clear_notification"
     async def clear_notification(self, event):
-        print(f"DEBUG: Sending clear popup signal to {self.agent_username}")
+        """Catches 'clear_notification' from AMI Listener and sends it to JS"""
+        print(f"DEBUG Consumer: Pushing CLEAR event to browser for {self.group_name}")
         await self.send(text_data=json.dumps({
-            'action': 'clear'
+            'type': 'clear_notification'
         }))
