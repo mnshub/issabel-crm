@@ -20,6 +20,9 @@ from crm.models import Extension, Customer
 LAST_IMPORT_TIME = 0
 IMPORT_COOLDOWN = 4  # Seconds to wait before allowing another CDR import run
 
+# NEW: Active memory structure tracking live answered connection vectors across event gaps
+ANSWERED_CHANNELS = set()
+
 
 # --- Helper to identify the caller's real name ---
 def get_caller_info(number):
@@ -30,7 +33,6 @@ def get_caller_info(number):
     try:
         ext = Extension.objects.select_related('agent__user').get(extension_number=clean_num)
         if ext.agent and ext.agent.user:
-            # Try to use First + Last name, fallback to username
             full_name = f"{ext.agent.user.first_name} {ext.agent.user.last_name}".strip()
             return full_name or ext.agent.user.username
     except Extension.DoesNotExist:
@@ -70,7 +72,6 @@ async def trigger_cdr_import():
     await asyncio.sleep(2)
     
     current_time = time.time()
-    # If the last import occurred within our cooldown window, ignore this event
     if current_time - LAST_IMPORT_TIME < IMPORT_COOLDOWN:
         print("CDR import throttled to avoid duplicate concurrent executions.")
         return
@@ -84,9 +85,10 @@ async def trigger_cdr_import():
         print(f"Auto-sync failed: {e}")
 
 async def call_event_handler(manager, message):
+    global ANSWERED_CHANNELS
     try:
+        # --- PHASE 1: RINGING INBOUND STATE HOOKS ---
         if message.event in ['DialBegin', 'Dial']:
-            
             caller_num = getattr(message, 'calleridnum', None) or getattr(message, 'callernum', 'Unknown')
             dest_num = getattr(message, 'destcalleridnum', None) or getattr(message, 'destexten', 'Unknown')
             
@@ -102,14 +104,12 @@ async def call_event_handler(manager, message):
             clean_dest = str(dest_num).strip()
             clean_caller = str(caller_num).strip() 
             
-            # Call the synchronous helpers safely
             agent_username = await sync_to_async(get_agent_username)(clean_dest)
             caller_name = await sync_to_async(get_caller_info)(clean_caller) 
             
             if agent_username == "NOT_FOUND":
                 print(f"DEBUG: Extension '{clean_dest}' not found in CRM database. Ignoring.")
             elif agent_username:
-                # THE CRITICAL FIX: Route to the Extension room, not the Agent room
                 group_name = f"extension_{clean_dest}"
                 print(f"DEBUG: Found agent '{agent_username}'. Sending popup to browser in room: {group_name}...")
                 
@@ -126,36 +126,76 @@ async def call_event_handler(manager, message):
             else:
                 print(f"DEBUG: Extension '{clean_dest}' exists, but has no user assigned.")
 
-        elif message.event in ['Hangup', 'Newstate']:
-            # If it's a state change, we only care if the call was answered (State: "Up")
-            if message.event == 'Newstate' and getattr(message, 'channelstatedesc', '') != 'Up':
-                pass # Ignore ringing or down states
-            else:
-                # Extract the extension number from the channel name (e.g., PJSIP/101-00001)
-                channel_name = getattr(message, 'channel', '')
-                match = re.search(r'(?:SIP|PJSIP)/(\d+)-', channel_name, re.IGNORECASE)
+        # --- PHASE 2: LINE LEVEL STATUS HANDSHAKE MONITORS ---
+        elif message.event == 'Newstate':
+            channel_state = getattr(message, 'channelstatedesc', '')
+            channel_name = getattr(message, 'channel', '')
+            
+            if channel_state == 'Up' and channel_name:
+                # Store the channel string in memory to confirm the call was successfully answered
+                ANSWERED_CHANNELS.add(channel_name)
+                print(f"📡 Channel Connection Live: {channel_name} marked as ANSWERED (Up).")
                 
+                # Clear active ringing popup frames the moment the extension handset is lifted
+                match = re.search(r'(?:SIP|PJSIP)/(\d+)-', channel_name, re.IGNORECASE)
                 if match:
-                    ext_num = match.group(1)
-                    clean_ext = str(ext_num).strip()
-                    agent_username = await sync_to_async(get_agent_username)(clean_ext)
-                    
-                    # If this extension belongs to an active CRM agent, clear their popup
-                    if agent_username and agent_username != "NOT_FOUND":
-                        # THE CRITICAL FIX 2: Clear from the Extension room
-                        group_name = f"extension_{clean_ext}"
-                        print(f"DEBUG: Call Answered/Rejected for Ext {clean_ext}. Clearing popup in room: {group_name}.")
-                        channel_layer = get_channel_layer()
-                        await channel_layer.group_send(
-                            group_name,
-                            {
-                                "type": "clear_notification"
-                            }
-                        )
+                    clean_ext = match.group(1).strip()
+                    group_name = f"extension_{clean_ext}"
+                    channel_layer = get_channel_layer()
+                    await channel_layer.group_send(group_name, {"type": "clear_notification"})
 
-            # ALWAYS trigger the CDR sync if the call has completely ended
-            if message.event == 'Hangup':
-                asyncio.create_task(trigger_cdr_import())
+        # --- PHASE 3: LINE DISCONNECT & POST-CALL WRAPUP INTERCEPT ROUTINES ---
+        elif message.event == 'Hangup':
+            channel_name = getattr(message, 'channel', '')
+            
+            # 1. Determine if the channel was ever successfully answered
+            is_answered = channel_name in ANSWERED_CHANNELS
+            ANSWERED_CHANNELS.discard(channel_name) # Evict immediately to clear memory footprints
+            
+            match = re.search(r'(?:SIP|PJSIP)/(\d+)-', channel_name, re.IGNORECASE)
+            if match:
+                clean_ext = match.group(1).strip()
+                agent_username = await sync_to_async(get_agent_username)(clean_ext)
+                
+                if agent_username and agent_username != "NOT_FOUND":
+                    group_name = f"extension_{clean_ext}"
+                    channel_layer = get_channel_layer()
+                    
+                    # Always instruct the browser to clear layout ringing notification elements
+                    await channel_layer.group_send(group_name, {"type": "clear_notification"})
+                    
+                    # 2. If answered, evaluate if a post-call workspace lock applies
+                    if is_answered:
+                        caller_id = getattr(message, 'calleridnum', '').strip()
+                        connected_id = getattr(message, 'connectedlinenum', '').strip()
+                        exten = getattr(message, 'exten', '').strip()
+                        
+                        # Isolate the outside line (the customer profile number)
+                        customer_phone = connected_id if caller_id == clean_ext else caller_id
+                        if not customer_phone or customer_phone == clean_ext:
+                            customer_phone = exten
+                            
+                        if customer_phone and customer_phone != 'Unknown':
+                            # Enforce Business Boundaries: Check if the other number is an internal agent extension
+                            other_party_agent = await sync_to_async(get_agent_username)(customer_phone)
+                            
+                            if other_party_agent == "NOT_FOUND":
+                                # Outside contact confirmed. Dispatch the mandatory wrap-up action frame token
+                                caller_name = await sync_to_async(get_caller_info)(customer_phone)
+                                print(f"🚀 Phase 3.2 Intercept: Answered external call ended for Ext {clean_ext}. Dispatching wrap-up modal lock...")
+                                await channel_layer.group_send(
+                                    group_name,
+                                    {
+                                        "type": "show_wrapup",
+                                        "phone_number": customer_phone,
+                                        "caller_name": caller_name
+                                    }
+                                )
+                            else:
+                                print(f"🔒 Skipped Wrap-up: Call between Ext {clean_ext} and Ext {customer_phone} was internal.")
+
+            # Always pass control down to trigger your asynchronous flat CDR file sharding tool commands
+            asyncio.create_task(trigger_cdr_import())
 
     except Exception as e:
         print(f"\n❌ FATAL ERROR IN EVENT HANDLER: {e}")

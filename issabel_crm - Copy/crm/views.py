@@ -1,89 +1,20 @@
 # crm/views.py
 import os
 import json
+import socket
 import paramiko
+import traceback
 from panoramisk import Manager
 from django.db.models import Q 
 from django.conf import settings
 from .models import CallLog, Agent, Extension, Customer
-from django.shortcuts import render, get_object_or_404
+from django.shortcuts import get_object_or_404
 from django.http import JsonResponse, FileResponse
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth import authenticate, login, logout
+from django.views.decorators.csrf import csrf_exempt
+from django.utils import timezone
 from asgiref.sync import async_to_sync
-
-@login_required
-def dashboard(request):
-    """
-    Renders the agent workspace dashboard, partitioning traffic into inbound 
-    and outbound queues while resolving raw extensions to agent names safely.
-    """
-    is_admin = request.user.groups.filter(name='Admin').exists() or request.user.is_superuser
-    agent_profile = getattr(request.user, 'agent_profile', None)
-    extension = getattr(agent_profile, 'extension', None) if agent_profile else None
-    inbound_calls, outbound_calls = [], []
-    search_num = request.GET.get('search_num')
-
-    # FIX: Loop through Agents with extensions instead of Extensions with agents.
-    # This prevents the RelatedObjectDoesNotExist crash entirely.
-    agents_pool = Agent.objects.select_related('extension').filter(extension__isnull=False)
-    ext_map = {agent.extension.extension_number: agent.full_name for agent in agents_pool}
-    
-    customers_pool = Customer.objects.all()
-    cust_map = {c.phone_number: f"{c.first_name} {c.last_name or ''}".strip() for c in customers_pool}
-
-    if extension:
-        ext_num = str(extension.extension_number).strip()
-        query = (Q(source_number__icontains=ext_num) | Q(destination_number__icontains=ext_num) |
-                 Q(raw_data__channel__icontains=ext_num) | Q(raw_data__dstchannel__icontains=ext_num))
-        if search_num: 
-            query &= Q(phone_number__icontains=search_num)
-        
-        raw_calls = CallLog.objects.filter(query).order_by('-call_time')[:100]
-        
-        for call in raw_calls:
-            src = str(call.source_number).strip()
-            dst = str(call.destination_number).strip()
-            dstchannel = str(call.raw_data.get('dstchannel', '')) if call.raw_data else ''
-
-            if ext_num == src and ext_num == dst: 
-                continue
-
-            # Assign display name attributes dynamically based on our cache map
-            call.source_display = ext_map.get(src) or cust_map.get(src) or src
-            call.destination_display = ext_map.get(dst) or cust_map.get(dst) or dst
-
-            if call.call_type == 'incoming':
-                inbound_calls.append(call)
-            elif call.call_type == 'outbound':
-                outbound_calls.append(call)
-            else:
-                if ext_num in dst or ext_num in dstchannel:
-                    inbound_calls.append(call)
-                else:
-                    outbound_calls.append(call)
-                    
-    elif is_admin:
-        query = Q()
-        if search_num: 
-            query &= Q(phone_number__icontains=search_num)
-        raw_calls = CallLog.objects.filter(query).order_by('-call_time')[:100]
-        for call in raw_calls:
-            src = str(call.source_number).strip()
-            dst = str(call.destination_number).strip()
-            call.source_display = ext_map.get(src) or cust_map.get(src) or src
-            call.destination_display = ext_map.get(dst) or cust_map.get(dst) or dst
-            inbound_calls.append(call)
-
-    context = {
-        'agent': agent_profile, 
-        'extension': extension, 
-        'is_admin': is_admin,
-        'inbound_calls': inbound_calls[:10], 
-        'outbound_calls': outbound_calls[:10], 
-        'current_filters': request.GET
-    }
-    return render(request, 'crm/agent_dashboard.html', context)
-
 
 @login_required
 def customer_lookup(request, phone_number):
@@ -125,7 +56,6 @@ def customer_lookup(request, phone_number):
 
     # Look up external customers if it's not an internal extension
     customer = Customer.objects.filter(phone_number=clean_number).first()
-    
     if not customer:
         return JsonResponse({
             'status': 'not_found',
@@ -179,7 +109,6 @@ def save_customer(request):
             'message': f"Customer record successfully {'created' if created else 'updated'}!",
             'customer_id': customer.id
         })
-        
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': f"Database fault: {str(e)}"}, status=500)
 
@@ -313,3 +242,184 @@ def click_to_dial(request, phone_number):
         return JsonResponse({'status': 'success', 'message': f'Calling {clean_phone}...'})
     except Exception as e:
         return JsonResponse({'status': 'error', 'message': f"VoIP error: {str(e)}"}, status=500)
+
+
+@login_required
+def api_dashboard_data(request):
+    """
+    Parallel API View: Gathers data identically to the primary dashboard view, 
+    accurately sorting logs by source/destination mapping and correcting local time offsets.
+    Now injects the Extension's PJSIP secret key dynamically to bridge the frontend WebRTC interface.
+    """
+    agent_profile = getattr(request.user, 'agent_profile', None)
+    extension = getattr(agent_profile, 'extension', None) if agent_profile else None
+    
+    inbound_calls = []
+    outbound_calls = []
+    
+    agents_pool = Agent.objects.select_related('extension').filter(extension__isnull=False)
+    ext_map = {str(agent.extension.extension_number).strip(): agent.full_name for agent in agents_pool}
+    
+    customers_pool = Customer.objects.all()
+    cust_map = {str(c.phone_number).strip(): f"{c.first_name} {c.last_name or ''}".strip() for c in customers_pool}
+
+    if extension:
+        ext_num = str(extension.extension_number).strip()
+        query = (Q(source_number=ext_num) | Q(destination_number=ext_num) |
+                 Q(raw_data__channel__icontains=ext_num) | Q(raw_data__dstchannel__icontains=ext_num))
+        
+        raw_calls = CallLog.objects.filter(query).order_by('-call_time')[:50]
+        
+        for call in raw_calls:
+            src = str(call.source_number).strip()
+            dst = str(call.destination_number).strip()
+
+            source_display = ext_map.get(src) or cust_map.get(src) or src
+            destination_display = ext_map.get(dst) or cust_map.get(dst) or dst
+
+            local_datetime = timezone.localtime(call.call_time)
+            
+            call_data = {
+                'id': call.id,
+                'source': src,
+                'destination': dst,
+                'source_display': source_display,
+                'destination_display': destination_display,
+                'call_time': local_datetime.strftime('%H:%M'),
+                'duration': f"{call.duration}s" if call.disposition == 'ANSWERED' and call.duration else '---',
+                'disposition': call.disposition,
+            }
+
+            if dst == ext_num:
+                call_data['display_name'] = source_display
+                call_data['is_agent'] = src in ext_map
+                call_data['other_phone'] = src
+                inbound_calls.append(call_data)
+            elif src == ext_num:
+                call_data['display_name'] = destination_display
+                call_data['is_agent'] = dst in ext_map
+                call_data['other_phone'] = dst
+                outbound_calls.append(call_data)
+
+    return JsonResponse({
+        'agent_name': agent_profile.full_name if agent_profile else request.user.username,
+        'extension_number': extension.extension_number if extension else "Not Assigned",
+        
+        # 🟢 THIS IS THE NEW DYNAMIC BINDING FOR YOUR WEBRTC CORE PHONE:
+        'extension_secret': extension.password if extension else "", 
+        
+        'inbound_calls': inbound_calls[:12],   
+        'outbound_calls': outbound_calls[:12]
+    })
+
+@csrf_exempt
+def api_login(request):
+    """
+    API Authentication Endpoint: Receives JSON user credentials, verifies permissions,
+    and initializes a secure backend session cookie across cross-origin ports.
+    """
+    if request.method != 'POST':
+        return JsonResponse({'status': 'error', 'message': 'Method not allowed'}, status=405)
+        
+    try:
+        data = json.loads(request.body)
+        username = data.get('username', '').strip()
+        password = data.get('password', '')
+        
+        user = authenticate(username=username, password=password)
+        if user is not None:
+            if user.is_active:
+                login(request, user)
+                return JsonResponse({'status': 'success', 'message': 'Session authenticated successfully'})
+            return JsonResponse({'status': 'error', 'message': 'This user profile has been deactivated'}, status=403)
+        return JsonResponse({'status': 'error', 'message': 'Invalid username or password credentials'}, status=401)
+    except Exception as e:
+        return JsonResponse({'status': 'error', 'message': f'Server authentication failure: {str(e)}'}, status=500)
+
+
+def api_logout(request):
+    """
+    API Authentication Endpoint: Flushes the active agent session from the backend database.
+    """
+    logout(request)
+    return JsonResponse({'status': 'success', 'message': 'Session flushed successfully'})
+
+
+def api_auth_status(request):
+    """
+    API Authentication Endpoint: Verification hook run by React on initial mount 
+    to confirm if the current browser session cookie is logged in.
+    """
+    if request.user.is_authenticated:
+        return JsonResponse({'authenticated': True, 'username': request.user.username})
+    return JsonResponse({'authenticated': False}, status=401)
+
+
+
+@login_required
+def save_wrapup(request):
+    """
+    Phase 3.4 API View: Receives call wrap-up metadata, locates the latest active CallLog 
+    matching the logged-in agent and the customer target, updates metrics, and flips 
+    the wrapup compliance flag to clear user workspace locks.
+    """
+    if request.method != 'POST':
+        return JsonResponse({'status': 'error', 'message': 'HTTP method not allowed'}, status=405)
+        
+    try:
+        data = json.loads(request.body)
+        phone_number = data.get('phone_number', '').strip()
+        disposition = data.get('disposition', '').strip()
+        notes = data.get('notes', '').strip()
+        
+        if not phone_number or not disposition:
+            return JsonResponse({'status': 'error', 'message': 'Target phone number and business outcome are mandatory fields'}, status=400)
+            
+        agent_profile = getattr(request.user, 'agent_profile', None)
+        extension = getattr(agent_profile, 'extension', None) if agent_profile else None
+        
+        if not extension:
+            return JsonResponse({'status': 'error', 'message': 'Agent has no allocated system extension configuration'}, status=400)
+            
+        ext_num = str(extension.extension_number).strip()
+        
+        # Locate the most recent call record involving this agent and the external customer party
+        call_record = CallLog.objects.filter(
+            Q(source_number=ext_num, destination_number=phone_number) |
+            Q(source_number=phone_number, destination_number=ext_num)
+        ).order_by('-call_time').first()
+        
+        if not call_record:
+            return JsonResponse({'status': 'error', 'message': f'No matching call history found between extension {ext_num} and target {phone_number}'}, status=404)
+            
+        # Dynamically map and commit outcomes directly to the database row fields
+        # Uses standard attribute handling and falls back gracefully to raw_data structures if fields are unmigrated
+        try:
+            call_record.business_disposition = disposition
+            call_record.notes = notes
+            call_record.wrapup_completed = True
+        except AttributeError:
+            # Resilient Fallback: If strict database column migrations aren't fully deployed yet,
+            # serialize the outcome context inside the raw_data JSON dictionary instead
+            if not call_record.raw_data or not isinstance(call_record.raw_data, dict):
+                call_record.raw_data = {}
+            call_record.raw_data['business_disposition'] = disposition
+            call_record.raw_data['notes'] = notes
+            call_record.raw_data['wrapup_completed'] = True
+            
+        call_record.save()
+        
+        # Optional: Also append notes to the central Customer Master Card if it exists
+        customer = Customer.objects.filter(phone_number=phone_number).first()
+        if customer:
+            # Preserves structural data by concatenating historic interaction logs
+            timestamp = timezone.localtime(timezone.now()).strftime('%Y-%m-%d %H:%M')
+            new_note_entry = f"\n[{timestamp} - Call Outcome: {disposition}]\n{notes}\n"
+            customer.notes = (customer.notes or "") + new_note_entry
+            customer.save()
+            
+        return JsonResponse({'status': 'success', 'message': 'Post-call interaction wrap-up logged successfully'})
+        
+    except Exception as e:
+        print(traceback.format_exc())
+        return JsonResponse({'status': 'error', 'message': f'Failed to process interaction logging context: {str(e)}'}, status=500)

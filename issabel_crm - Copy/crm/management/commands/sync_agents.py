@@ -8,13 +8,13 @@ from django.core.management.base import BaseCommand
 from crm.models import Extension, Agent
 
 class Command(BaseCommand):
-    help = "Synchronizes active agent profiles and extensions directly from Issabel PBX using sanitized names as usernames"
+    help = "Synchronizes active agent profiles, extensions, and their passwords dynamically from Issabel PBX"
 
     def handle(self, *args, **kwargs):
         self.stdout.write("Connecting to Issabel PBX configuration tables...")
         
         try:
-            # Connect to Issabel's primary hardware engine database
+            # اتصال کاملاً ایمن و فقط‌خواندنی به دیتابیس ایزابل
             connection = pymysql.connect(
                 host=settings.PBX_DB_HOST,
                 user=settings.PBX_DB_USER,
@@ -30,11 +30,12 @@ class Command(BaseCommand):
 
         try:
             with connection.cursor() as cursor:
-                # Query user listings and map their matching device technologies
+                # اصلاح تخصصی: خواندن پسورد از جدول واقعی ایزابل که نامش 'sip' است
                 cursor.execute("""
-                    SELECT u.extension, u.name, d.tech 
+                    SELECT u.extension, u.name, d.tech, s.data AS secret
                     FROM users u
                     LEFT JOIN devices d ON u.extension = d.id
+                    LEFT JOIN sip s ON u.extension = s.id AND s.keyword = 'secret'
                 """)
                 pbx_agents = cursor.fetchall()
 
@@ -42,6 +43,7 @@ class Command(BaseCommand):
                     ext_num = str(pbx.get('extension', '')).strip()
                     full_name = str(pbx.get('name', '')).strip()
                     tech = str(pbx.get('tech', 'PJSIP')).strip().upper()
+                    secret = str(pbx.get('secret', '')).strip()  # دریافت پسورد واقعی
 
                     if not ext_num or not full_name:
                         continue
@@ -49,26 +51,24 @@ class Command(BaseCommand):
                     if tech not in ['SIP', 'PJSIP', 'IAX2']:
                         tech = 'PJSIP'
 
-                    # 1. Synchronize the Extension Table record
+                    # ذخیره داینامیک داخلی به همراه پسورد واقعی در دیتابیس جنگو
+                    # نام فیلد پسورد را با مدل خودتان (مثلاً password یا secret) مچ کنید
                     extension, ext_created = Extension.objects.update_or_create(
                         extension_number=ext_num,
-                        defaults={'technology': tech}
+                        defaults={
+                            'technology': tech,
+                            'password': secret  
+                        }
                     )
 
                     # --- ENTERPRISE NAME SANITIZATION ENGINE ---
-                    # Transform "Mohammad Mansouri" -> "mohammad_mansouri"
-                    # Supports Persian/Arabic Unicode letter structures out of the box
                     username_base = full_name.strip().replace(" ", "_").lower()
-                    
-                    # Strip out any character that is not alphanumeric, a dot, a plus, a minus, or an underscore
-                    # \w in Python 3 automatically matches full multi-language Unicode characters safely
                     sanitized_username = re.sub(r'[^\w\.\+\-]', '', username_base)
                     
-                    # Bulletproof fallback safeguard: if name parsing yields empty strings, use extension
                     if not sanitized_username:
                         sanitized_username = f"user_{ext_num}"
 
-                    # 2. Synchronize or create a secure Django login authentication identity user
+                    # همگام‌سازی کاربر دیتابیس جنگو
                     auth_user, user_created = User.objects.get_or_create(
                         username=sanitized_username,
                         defaults={
@@ -81,7 +81,7 @@ class Command(BaseCommand):
                         auth_user.set_password('Welcome@1234')
                         auth_user.save()
 
-                    # 3. Synchronize the Agent Table Profile layer
+                    # همگام‌سازی پروفایل کارشناس
                     agent, agent_created = Agent.objects.update_or_create(
                         extension=extension,
                         defaults={
@@ -92,11 +92,11 @@ class Command(BaseCommand):
                     )
                     
                     synced_count += 1
-                    self.stdout.write(f"Synced Identity: Extension {ext_num} -> Username: {sanitized_username} ({full_name})")
+                    self.stdout.write(f"Synced Dynamically: Extension {ext_num} -> Password Secured.")
 
         except Exception as e:
             self.stdout.write(self.style.ERROR(f"Sync process aborted due to exception: {e}"))
         finally:
             connection.close()
 
-        self.stdout.write(self.style.SUCCESS(f"Successfully synchronized {synced_count} profiles from Issabel PBX."))
+        self.stdout.write(self.style.SUCCESS(f"Successfully synchronized {synced_count} profiles."))

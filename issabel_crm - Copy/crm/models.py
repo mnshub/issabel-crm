@@ -11,6 +11,7 @@ class Extension(models.Model):
     extension_number = models.CharField(max_length=10, unique=True, help_text="Asterisk internal extension number")
     technology = models.CharField(max_length=10, choices=TECHNOLOGY_CHOICES, default='PJSIP')
     created_at = models.DateTimeField(auto_now_add=True)
+    password = models.CharField(max_length=100, blank=True, default="", help_text="PJSIP secret key for WebRTC registration")
 
     def __str__(self):
         return f"{self.technology}/{self.extension_number}"
