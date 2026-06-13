@@ -119,7 +119,8 @@ export default function App() {
       uri: `sip:${extension}@192.168.100.115`,
       password: secret, // دریافت داینامیک کلید سکرت اختصاصی افزوده شده به مدل جنگو
       register: true,
-      session_timers: false
+      session_timers: false,
+      realm: 'asterisk' // Explicit match for Issabel system digest validation
     };
 
     const ua = new JsSIP.UA(config);
