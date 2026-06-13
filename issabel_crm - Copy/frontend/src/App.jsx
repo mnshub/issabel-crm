@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import JsSIP from 'jssip';
-import { Phone, User, Activity, LogOut, CheckCircle, XCircle, X, Save, FileText, Mail, ShieldCheck, PhoneCall, Loader2, Play, Volume2, Search, PhoneForwarded, BarChart3, TrendingUp, PhoneMissed, Lock, ShieldAlert, ClipboardCheck, AlertTriangle, Sun, Moon, PhoneOff } from 'lucide-react';
+import { Phone, User, Activity, LogOut, CheckCircle, XCircle, X, Save, FileText, Mail, ShieldCheck, PhoneCall, Loader2, Play, Volume2, Search, PhoneForwarded, BarChart3, TrendingUp, PhoneMissed, Lock, ShieldAlert, ClipboardCheck, AlertTriangle, Sun, Moon, PhoneOff, Timer } from 'lucide-react';
 
 // تنظیم هدرهای پیش‌فرض اکسپورت فرکانس‌های میان‌سایتی به بک‌اند جنگو
 axios.defaults.baseURL = 'http://127.0.0.1:8000';
@@ -21,8 +21,16 @@ export default function App() {
   const [sipRegistered, setSipRegistered] = useState(false);
   const [sipCallState, setSipCallState] = useState('IDLE'); // IDLE, RINGING, CONNECTED
   const [activeSipSession, setActiveSipSession] = useState(null);
+  const [isCallOnHold, setIsCallOnHold] = useState(false); // وضعیت مانیتورینگ پشت خط گذاشتن تماس
   const [sipError, setSipError] = useState('');
   
+  // سیستم تایمر لایو و بلادرنگ برای مدت زمان مکالمه جاری
+  const [callDuration, setCallDuration] = useState(0);
+  const durationIntervalRef = useRef(null);
+
+  // شتاب‌دهنده همگام‌سازی بدون درز پس‌زمینه دیتابیس
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+
   // رفرنس‌های پایدار جهت حفظ سوکت و سشن در رندرهای متوالی کامپوننت
   const uaRef = useRef(null);
   const currentSessionRef = useRef(null);
@@ -77,7 +85,7 @@ export default function App() {
       .then(res => {
         if (res.data.authenticated) {
           setIsAuthenticated(true);
-          fetchDashboardData();
+          fetchDashboardData(false); 
         }
         setAuthLoading(false);
       })
@@ -87,9 +95,17 @@ export default function App() {
       });
   }, []);
 
-  // واکشی آمارهای اصلی داشبورد و اطلاعات داخلی اختصاصی کارشناس
-  const fetchDashboardData = () => {
-    setLoading(true);
+  // ناظر تعاملی فرکانس رفرش لایو بدون پرش صفحه
+  useEffect(() => {
+    if (refreshTrigger > 0) {
+      fetchDashboardData(true); 
+    }
+  }, [refreshTrigger]);
+
+  // واکشی آمارهای اصلی داشبورد با قابلیت کنترل بروزرسانی بی‌صدا در پس‌زمینه
+  const fetchDashboardData = (silent = false) => {
+    if (!silent) setLoading(true); 
+    
     axios.get('/api/dashboard/data/')
       .then(res => {
         setAgentData(res.data);
@@ -106,21 +122,44 @@ export default function App() {
       });
   };
 
-  // موتور اصلی هندشیک و ریجستر وب‌ساکت تلفن داخلی به سرور ایزابل (Port 8089)
+  // مدیریت موتور شمارش ثانیه‌های مکالمه لایه وب
+  const startLiveTimer = () => {
+    stopLiveTimer(); 
+    setCallDuration(0);
+    durationIntervalRef.current = setInterval(() => {
+      setCallDuration((prev) => prev + 1);
+    }, 1000);
+  };
+
+  const stopLiveTimer = () => {
+    if (durationIntervalRef.current) {
+      clearInterval(durationIntervalRef.current);
+      durationIntervalRef.current = null;
+    }
+  };
+
+  // فرمت‌دهی ثانیه‌ها به استایل استاندارد دقیقه:ثانیه (02:14)
+  const formatTime = (totalSeconds) => {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  };
+
+  // مرکز مانیتورینگ و هندشیک وب‌ساکت به سرور ایزابل
   const initializeWebRTC = (extension, secret) => {
-    if (uaRef.current) return; // جلوگیری از باز کردن تردها و سوکت‌های تکراری روی شبکه مرورگر
+    if (uaRef.current) return; 
 
     console.log(`🔌 Initializing WebRTC PJSIP Engine for Line Extension: ${extension}`);
-    JsSIP.debug.enable('jssip:*'); // فعال‌سازی پورت ابزار تلمتری مانیتورینگ پروتکل در کنسول مرورگر
+    JsSIP.debug.enable('jssip:*'); 
 
     const socket = new JsSIP.WebSocketInterface('wss://192.168.100.115:8089/ws'); 
     const webrtcExtension = `8${extension}`;
-    // 2. Inject the dynamic variable into the JsSIP configuration
+
     const config = {
       sockets: [socket],
-      uri: `sip:${webrtcExtension}@192.168.100.115`, // Dynamically points to 8101, 8102, etc.
-      authorization_user: webrtcExtension,           // Tells Asterisk exactly which lock to open
-      password: secret,                              // The specific agent's secret key
+      uri: `sip:${webrtcExtension}@192.168.100.115`, 
+      authorization_user: webrtcExtension,           
+      password: secret,                              
       register: true,
       session_timers: false,
       realm: 'asterisk'
@@ -129,7 +168,6 @@ export default function App() {
     const ua = new JsSIP.UA(config);
     uaRef.current = ua;
 
-    // مانیتورینگ چرخه ثبت داخلی روی مرکز تلفن ایزابل
     ua.on('registered', () => {
       console.log("🟢 WebRTC Extension Registered Successfully onto Issabel Core!");
       setSipRegistered(true);
@@ -142,12 +180,12 @@ export default function App() {
       setSipError(`خطا در اتصال تلفن داخلی: ${e.cause}`);
     });
 
-    // مدیریت لاین‌ها و استریم‌های صوتی ورودی (Inbound Session Handlers)
     ua.on('newRTCSession', (data) => {
       const session = data.session;
       currentSessionRef.current = session;
       setActiveSipSession(session);
 
+      // فیکس پاپ‌آپ: شلیک پاپ‌آپ واحد و بومی انحصاری روی خطوط ورودی شبکه صوتی WebRTC
       if (session.direction === 'incoming') {
         console.log("📥 Incoming WebRTC Call Channel Triggered!");
         setSipCallState('RINGING');
@@ -157,30 +195,49 @@ export default function App() {
         });
       }
 
-      // تغییر وضعیت کامپوننت پس از پذیرش و اتصال کانال صوتی دوطرفه
       session.on('accepted', () => {
         console.log("📞 Call Connection Answered - Handshake Complete.");
         setSipCallState('CONNECTED');
-        setActiveCall(null); // پاکسازی پاپ‌آپ وضعیت زنگ زدن فرعی
+        setActiveCall(null); 
+        startLiveTimer(); 
+      });
+
+      // مدیریت تغییر وضعیت‌های هولد درون مکالمه
+      session.on('hold', () => {
+        console.log("⏸️ Session tracking: Call placed on hold");
+        setIsCallOnHold(true);
+      });
+
+      session.on('unhold', () => {
+        console.log("▶️ Session tracking: Call unheld");
+        setIsCallOnHold(false);
       });
 
       session.on('ended', () => {
         console.log("🛑 WebRTC Session Terminated Normally.");
         handleCallCleanup();
+        setTimeout(() => {
+          setRefreshTrigger(prev => prev + 1);
+        }, 2200);
       });
 
       session.on('failed', (e) => {
         console.warn("❌ WebRTC Connection Interrupted/Refused:", e.cause);
         handleCallCleanup();
+        setTimeout(() => {
+          setRefreshTrigger(prev => prev + 1);
+        }, 2200);
       });
 
-      // روتینگ مستقیم بایت‌های صوتی رمزگشایی شده WebRTC به خروجی هدست کارشناس
-      session.connection.addEventListener('track', (e) => {
-        console.log("🔊 WebRTC Media Track Detected. Binding Stream to Headset Array...");
-        const remoteAudio = document.getElementById('webRtcRemoteAudio');
-        if (remoteAudio && e.streams[0]) {
-          remoteAudio.srcObject = e.streams[0];
-        }
+      // راه‌اندازی شلیک امن استریم مدیا پس از آماده‌سازی لایه دسترسی PeerConnection
+      session.on('peerconnection', (data) => {
+        data.peerconnection.addEventListener('track', (e) => {
+          console.log("🔊 WebRTC Media Track Detected. Binding Stream to Headset Array...");
+          const remoteAudio = document.getElementById('webRtcRemoteAudio');
+          if (remoteAudio && e.streams[0]) {
+            remoteAudio.srcObject = e.streams[0];
+          }
+        });
       });
     });
 
@@ -192,22 +249,37 @@ export default function App() {
     setActiveSipSession(null);
     currentSessionRef.current = null;
     setActiveCall(null);
+    setIsCallOnHold(false);
+    stopLiveTimer(); 
+    setCallDuration(0);
   };
 
   // کنترلرهای محلی دکمه‌های پاسخگویی و قطع تماس مرورگر
   const handleNativeSipAnswer = () => {
     if (currentSessionRef.current && sipCallState === 'RINGING') {
       const options = {
-        mediaConstraints: { audio: true, video: false } // استفاده خالص از کانال صوت بدون ویدیو
+        mediaConstraints: { audio: true, video: false }
       };
       currentSessionRef.current.answer(options);
     }
   };
 
+  // قطع تماس بومی مرورگر
   const handleNativeSipDecline = () => {
     if (currentSessionRef.current) {
       currentSessionRef.current.terminate();
       handleCallCleanup();
+    }
+  };
+
+  // تابع بومی سوئیچ وضعیت هولد و قرار دادن مشتری پشت خط
+  const handleToggleHold = () => {
+    if (currentSessionRef.current && sipCallState === 'CONNECTED') {
+      if (currentSessionRef.current.isOnHold().local) {
+        currentSessionRef.current.unhold();
+      } else {
+        currentSessionRef.current.hold();
+      }
     }
   };
 
@@ -226,11 +298,11 @@ export default function App() {
       console.log("⚓ Intercepted Event Frame:", data);
 
       if (data.type === 'call_ringing') {
-        if (sipCallState === 'IDLE') {
-          setActiveCall({ caller: data.caller, number: data.number });
-        }
+        // فیکس پاپ‌آپ: نادیده گرفتن رویداد زنگ خوردن جنگو جهت جلوگیری از تولید پاپ‌آپ دوم و تداخل با وب‌آرتی‌سی
+        console.log("📥 Daphne WebSocket ringing event bypassed. Unified popup handled by WebRTC.");
       } else if (data.type === 'clear_notification') {
         if (sipCallState === 'IDLE') setActiveCall(null);
+        setRefreshTrigger(prev => prev + 1);
       } else if (data.type === 'show_wrapup') {
         setActiveCall(null); 
         setWrapupForm({ disposition: '', notes: '' }); 
@@ -244,10 +316,6 @@ export default function App() {
 
     return () => {
       socket.close();
-      if (uaRef.current) {
-        uaRef.current.stop();
-        uaRef.current = null;
-      }
     };
   }, [isAuthenticated, sipCallState]);
 
@@ -297,7 +365,7 @@ export default function App() {
     axios.post('/api/auth/login/', { username, password })
       .then(() => {
         setIsAuthenticated(true);
-        fetchDashboardData(); 
+        fetchDashboardData(false); 
         setIsSubmitting(false);
       })
       .catch(err => {
@@ -327,7 +395,7 @@ export default function App() {
       .then(() => {
         setWrapupData(null); 
         setIsSubmittingWrapup(false);
-        fetchDashboardData(); 
+        setRefreshTrigger(prev => prev + 1); 
       })
       .catch(err => {
         setWrapupError(err.response?.data?.message || 'خطا در ثبت و بروزرسانی اطلاعات.');
@@ -358,31 +426,35 @@ export default function App() {
     const sanitizedNumber = phoneNumber.replace(/\s+/g, '');
     setDialingPhone(sanitizedNumber);
 
-// تماس مستقیم از مروگر در صورت ثبت موفق خط داخلی WebRTC
+    // تماس مستقیم و بومی از مرورگر در صورت ثبت موفق خط داخلی WebRTC
     if (sipRegistered && uaRef.current) {
       console.log(`🚀 Native WebRTC Outbound Dial Triggered for Target: ${sanitizedNumber}`);
       
+      const agentDisplayName = agentData?.agent_name || 'Agent';
+      const technicalExtension = agentData?.extension_number || '101';
+
       const options = {
         mediaConstraints: { audio: true, video: false },
-        // Explicit constraints to guarantee the browser does not offer any video channels to the audio PBX
         rtcOfferConstraints: {
           offerToReceiveAudio: 1,
           offerToReceiveVideo: 0
-        }
+        },
+        extraHeaders: [
+          `P-Asserted-Identity: "${agentDisplayName}" <sip:${technicalExtension}@192.168.100.115>`,
+          `Remote-Party-ID: "${agentDisplayName}" <sip:${technicalExtension}@192.168.100.115>;party=calling;screen=yes;privacy=off`
+        ]
       };
 
       const session = uaRef.current.call(`sip:${sanitizedNumber}@192.168.100.115`, options);
       currentSessionRef.current = session;
       setActiveSipSession(session);
       
-      // Set to RINGING or a calling state first; our accepted event listener below will turn it into CONNECTED once answered
       setSipCallState('RINGING'); 
       
       setTimeout(() => setDialingPhone(null), 1000);
       return;
     }
 
-    // روتینگ بک‌آپ از طریق درخواست به هسته مدیریت اصلی ایزابل (Asterisk AMI)
     axios.get(`/call/dial/${sanitizedNumber}/`)
       .then(() => {
         setTimeout(() => setDialingPhone(null), 2500); 
@@ -430,7 +502,7 @@ export default function App() {
       .then(() => {
         setIsSaving(false);
         setSaveStatus('success');
-        fetchDashboardData(); 
+        setRefreshTrigger(prev => prev + 1); 
         setTimeout(() => setSaveStatus(null), 3000);
       })
       .catch(err => {
@@ -455,7 +527,7 @@ export default function App() {
   const missedCount = totalCallsCount - answeredCount;
   const successRatio = totalCallsCount > 0 ? Math.round((answeredCount / totalCallsCount) * 100) : 0;
 
-  // فیلترینگ کلاینت‌ساید آرایه‌ها بر اساس کوئری جستجو
+  // فیلتر کردن ورودی‌ها و خروجی‌ها بر اساس کوئری جستجو
   const filteredInbound = rawInbound.filter(call => 
     call.display_name.toLowerCase().includes(searchQuery.toLowerCase()) || 
     call.other_phone.includes(searchQuery)
@@ -477,7 +549,6 @@ export default function App() {
     );
   }
 
-  // نمایش فرم ورود در صورت عدم اهراز هویت سشن کاربری
   if (!isAuthenticated) {
     return (
       <div className={`min-h-screen w-full flex items-center justify-center p-4 sm:p-6 transition-all duration-500 ${isDarkMode ? 'bg-gradient-to-br from-gray-950 via-slate-900 to-zinc-950' : 'bg-gradient-to-br from-slate-100 via-zinc-200 to-gray-300'}`} dir="rtl">
@@ -541,7 +612,7 @@ export default function App() {
       <div className={`flex h-screen w-screen items-center justify-center transition-all duration-500 ${isDarkMode ? 'bg-gray-950 text-gray-100' : 'bg-slate-100 text-gray-800'}`} dir="rtl">
         <div className="text-center px-4">
           <div className="h-12 w-12 animate-spin rounded-full border-4 border-red-500 border-t-transparent mx-auto"></div>
-          <p className={`mt-4 font-medium text-sm sm:text-base ${textSecondary}`}>در حال راه‌اندازی موتور تلفنی...</p>
+          <p className={`mt-4 font-medium text-sm sm:text-base ${textSecondary}`}>در حال بررسی نشست‌های امنیتی...</p>
         </div>
       </div>
     );
@@ -919,37 +990,34 @@ export default function App() {
         </div>
       </div>
 
-      {/* پاپ‌آپ هوشمند هشدار تماس ورودی با ماژول کلید کنترل زنده (WebRTC Call Controls) */}
-      {activeCall && (
-        <div className={`fixed bottom-4 left-4 right-4 sm:left-auto sm:right-6 sm:bottom-6 w-auto sm:w-80 border-r-8 rounded-xl p-4 sm:p-5 z-50 shadow-2xl transition-all duration-300 ${glassClass} ${sipCallState === 'RINGING' ? 'border-amber-500 animate-pulse' : 'border-green-500 animate-bounce'}`}>
+      {/* فیکس پاپ‌آپ: پاپ‌آپ هوشمند و واحد هشدار تماس ورودی که انحصاراً در زمان تغییر استیت WebRTC فعال می‌شود */}
+      {activeCall && sipCallState === 'RINGING' && (
+        <div className={`fixed bottom-4 left-4 right-4 sm:left-auto sm:right-6 sm:bottom-6 w-auto sm:w-80 border-r-8 rounded-xl p-4 sm:p-5 z-50 shadow-2xl transition-all duration-300 ${glassClass} border-amber-500 animate-pulse`}>
           <div className="flex items-start gap-4">
-            <div className={`p-2.5 sm:p-3 rounded-lg ${sipCallState === 'RINGING' ? 'bg-amber-500/10 text-amber-400' : 'bg-green-500/10 text-green-400'}`}>
+            <div className="p-2.5 sm:p-3 rounded-lg bg-amber-500/10 text-amber-400">
               <Phone className="h-5 w-5 sm:h-6 sm:w-6" />
             </div>
             <div className="flex-1 min-w-0">
               <h4 className="text-xs font-bold uppercase tracking-wider text-amber-400">
-                {sipCallState === 'RINGING' ? 'تماس ورودی زنده (WebRTC)...' : 'تماس ورودی جدید...'}
+                تماس ورودی زنده (WebRTC)...
               </h4>
               <h3 className={`text-lg sm:text-xl font-black mt-1 truncate ${textPrimary}`}>{activeCall.caller}</h3>
               <p className={`text-xs sm:text-sm mt-0.5 ${textSecondary}`}>خط: <span className="font-mono">{activeCall.number}</span></p>
               
-              {/* کلیدهای تعاملی پاسخ و رد مکالمه وب‌آرتی‌سی داخل مرورگر */}
-              {sipCallState === 'RINGING' && (
-                <div className="flex gap-2 mt-4">
-                  <button
-                    onClick={handleNativeSipAnswer}
-                    className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold text-xs py-2 px-3 rounded-md flex items-center justify-center gap-1 transition shadow-md cursor-pointer"
-                  >
-                    <PhoneCall className="h-3 w-3" /> پاسخ تماس
-                  </button>
-                  <button
-                    onClick={handleNativeSipDecline}
-                    className="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold text-xs py-2 px-3 rounded-md flex items-center justify-center gap-1 transition shadow-md cursor-pointer"
-                  >
-                    <PhoneOff className="h-3 w-3" /> رد تماس
-                  </button>
-                </div>
-              )}
+              <div className="flex gap-2 mt-4">
+                <button
+                  onClick={handleNativeSipAnswer}
+                  className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold text-xs py-2 px-3 rounded-md flex items-center justify-center gap-1 transition shadow-md cursor-pointer"
+                >
+                  <PhoneCall className="h-3 w-3" /> پاسخ تماس
+                </button>
+                <button
+                  onClick={handleNativeSipDecline}
+                  className="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold text-xs py-2 px-3 rounded-md flex items-center justify-center gap-1 transition shadow-md cursor-pointer"
+                >
+                  <PhoneOff className="h-3 w-3" /> رد تماس
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -957,16 +1025,34 @@ export default function App() {
 
       {/* بنر شناور هشدار مکالمه زنده و فعال متصل شده در بالای داشبورد */}
       {sipCallState === 'CONNECTED' && activeSipSession && (
-        <div className="fixed top-24 left-1/2 transform -translate-x-1/2 bg-green-500/10 border border-green-500/30 text-green-400 text-xs py-2 px-6 rounded-full font-black flex items-center gap-3 shadow-xl backdrop-blur-md z-40 animate-pulse">
-          <Activity className="h-3.5 w-3.5 animate-spin" />
-          <span>مکالمه زنده برقرار است • شماره: <strong className="font-mono">{activeSipSession.remote_identity.uri.user}</strong></span>
-          <button 
-            onClick={handleNativeSipDecline}
-            className="bg-red-600 hover:bg-red-700 text-white font-bold rounded-full p-1 mr-2 transition-all cursor-pointer"
-            title="قطع مکالمه"
-          >
-            <X className="h-3 w-3" />
-          </button>
+        <div className="fixed top-24 left-1/2 transform -translate-x-1/2 bg-green-500/10 border border-green-500/30 text-green-400 text-xs py-2 px-6 rounded-full font-black flex items-center justify-between gap-4 shadow-xl backdrop-blur-md z-40">
+          <div className="flex items-center gap-3 animate-pulse">
+            <Activity className="h-3.5 w-3.5 animate-spin" />
+            <span>مکالمه زنده برقرار است • شماره: <strong className="font-mono">{activeSipSession.remote_identity.uri.user}</strong></span>
+          </div>
+
+          {/* نمایش مدت زمان زنده و واقعی تماس در کنار آیکون تایمر درون بنر */}
+          <div className="flex items-center gap-1 bg-green-500/20 text-green-300 font-mono font-bold px-2 py-0.5 rounded-md border border-green-500/30">
+            <Timer className="h-3 w-3 animate-pulse text-green-400" />
+            <span>{formatTime(callDuration)}</span>
+          </div>
+
+          {/* ویجت تعاملی هولد زنده و قطع نهایی کانال ارتباطی */}
+          <div className="flex items-center gap-2 border-r border-green-500/20 pr-2">
+            <button
+              onClick={handleToggleHold}
+              className={`text-[10px] font-bold px-2.5 py-1 rounded transition-all cursor-pointer ${isCallOnHold ? 'bg-amber-600 text-white animate-pulse' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
+            >
+              {isCallOnHold ? 'وصل مجدد (Unhold)' : 'انتظار (Hold)'}
+            </button>
+            <button 
+              onClick={handleNativeSipDecline}
+              className="bg-red-600 hover:bg-red-700 text-white font-bold rounded-full p-1 transition-all cursor-pointer"
+              title="قطع مکالمه"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
         </div>
       )}
 
