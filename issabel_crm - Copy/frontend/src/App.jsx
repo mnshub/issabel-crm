@@ -114,13 +114,16 @@ export default function App() {
     JsSIP.debug.enable('jssip:*'); // فعال‌سازی پورت ابزار تلمتری مانیتورینگ پروتکل در کنسول مرورگر
 
     const socket = new JsSIP.WebSocketInterface('wss://192.168.100.115:8089/ws'); 
+    const webrtcExtension = `8${extension}`;
+    // 2. Inject the dynamic variable into the JsSIP configuration
     const config = {
       sockets: [socket],
-      uri: `sip:${extension}@192.168.100.115`,
-      password: secret, // دریافت داینامیک کلید سکرت اختصاصی افزوده شده به مدل جنگو
+      uri: `sip:${webrtcExtension}@192.168.100.115`, // Dynamically points to 8101, 8102, etc.
+      authorization_user: webrtcExtension,           // Tells Asterisk exactly which lock to open
+      password: secret,                              // The specific agent's secret key
       register: true,
       session_timers: false,
-      realm: 'asterisk' // Explicit match for Issabel system digest validation
+      realm: 'asterisk'
     };
 
     const ua = new JsSIP.UA(config);
@@ -355,16 +358,26 @@ export default function App() {
     const sanitizedNumber = phoneNumber.replace(/\s+/g, '');
     setDialingPhone(sanitizedNumber);
 
-    // تماس مستقیم از مروگر در صورت ثبت موفق خط داخلی WebRTC
+// تماس مستقیم از مروگر در صورت ثبت موفق خط داخلی WebRTC
     if (sipRegistered && uaRef.current) {
       console.log(`🚀 Native WebRTC Outbound Dial Triggered for Target: ${sanitizedNumber}`);
+      
       const options = {
-        mediaConstraints: { audio: true, video: false }
+        mediaConstraints: { audio: true, video: false },
+        // Explicit constraints to guarantee the browser does not offer any video channels to the audio PBX
+        rtcOfferConstraints: {
+          offerToReceiveAudio: 1,
+          offerToReceiveVideo: 0
+        }
       };
+
       const session = uaRef.current.call(`sip:${sanitizedNumber}@192.168.100.115`, options);
       currentSessionRef.current = session;
       setActiveSipSession(session);
-      setSipCallState('CONNECTED');
+      
+      // Set to RINGING or a calling state first; our accepted event listener below will turn it into CONNECTED once answered
+      setSipCallState('RINGING'); 
+      
       setTimeout(() => setDialingPhone(null), 1000);
       return;
     }
