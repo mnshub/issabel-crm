@@ -14,7 +14,7 @@ class Command(BaseCommand):
         self.stdout.write("Connecting to Issabel PBX configuration tables...")
         
         try:
-            # اتصال کاملاً ایمن و فقط‌خواندنی به دیتابیس ایزابل
+            # Safe read-only channel connection mapping to your Issabel database settings
             connection = pymysql.connect(
                 host=settings.PBX_DB_HOST,
                 user=settings.PBX_DB_USER,
@@ -27,10 +27,11 @@ class Command(BaseCommand):
             return
 
         synced_count = 0
+        skipped_count = 0
 
         try:
             with connection.cursor() as cursor:
-                # اصلاح تخصصی: خواندن پسورد از جدول واقعی ایزابل که نامش 'sip' است
+                # Queries active extensions, technologies, and secrets from Issabel
                 cursor.execute("""
                     SELECT u.extension, u.name, d.tech, s.data AS secret
                     FROM users u
@@ -43,16 +44,22 @@ class Command(BaseCommand):
                     ext_num = str(pbx.get('extension', '')).strip()
                     full_name = str(pbx.get('name', '')).strip()
                     tech = str(pbx.get('tech', 'PJSIP')).strip().upper()
-                    secret = str(pbx.get('secret', '')).strip()  # دریافت پسورد واقعی
+                    secret = str(pbx.get('secret', '')).strip()  # Real authentication secret string token
 
                     if not ext_num or not full_name:
+                        continue
+
+                    # 🟢 NEW ARCHITECTURE MECHANISM: Filter out WebRTC follow-me mirrors
+                    # This tells the loop to immediately skip virtual mirrors like 8101 or 8102
+                    if ext_num.startswith('8'):
+                        self.stdout.write(self.style.WARNING(f"⚠️ Skipping virtual WebRTC mirror line: {ext_num}"))
+                        skipped_count += 1
                         continue
 
                     if tech not in ['SIP', 'PJSIP', 'IAX2']:
                         tech = 'PJSIP'
 
-                    # ذخیره داینامیک داخلی به همراه پسورد واقعی در دیتابیس جنگو
-                    # نام فیلد پسورد را با مدل خودتان (مثلاً password یا secret) مچ کنید
+                    # Synchronize the primary physical/baseline line numbers cleanly in Django
                     extension, ext_created = Extension.objects.update_or_create(
                         extension_number=ext_num,
                         defaults={
@@ -68,7 +75,7 @@ class Command(BaseCommand):
                     if not sanitized_username:
                         sanitized_username = f"user_{ext_num}"
 
-                    # همگام‌سازی کاربر دیتابیس جنگو
+                    # Synchronize standard web application login credentials safely
                     auth_user, user_created = User.objects.get_or_create(
                         username=sanitized_username,
                         defaults={
@@ -81,7 +88,7 @@ class Command(BaseCommand):
                         auth_user.set_password('Welcome@1234')
                         auth_user.save()
 
-                    # همگام‌سازی پروفایل کارشناس
+                    # Commit properties safely into the Agent relational table mapping
                     agent, agent_created = Agent.objects.update_or_create(
                         extension=extension,
                         defaults={
@@ -92,11 +99,13 @@ class Command(BaseCommand):
                     )
                     
                     synced_count += 1
-                    self.stdout.write(f"Synced Dynamically: Extension {ext_num} -> Password Secured.")
+                    self.stdout.write(f"✅ Synced Cleanly: Extension {ext_num} mapped to User '{sanitized_username}'")
 
         except Exception as e:
             self.stdout.write(self.style.ERROR(f"Sync process aborted due to exception: {e}"))
         finally:
             connection.close()
 
-        self.stdout.write(self.style.SUCCESS(f"Successfully synchronized {synced_count} profiles."))
+        self.stdout.write(self.style.SUCCESS(
+            f"🎯 Sync Pipeline Finished. Profiles provisioned: {synced_count} | Virtual lines skipped: {skipped_count}"
+        ))
