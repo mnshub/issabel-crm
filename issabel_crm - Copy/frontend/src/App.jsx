@@ -73,7 +73,7 @@ const CallListSection = React.memo(({ title, icon, badgeColor, calls, dialingPho
 });
 
 // ============================================================================
-// 🚀 پاپ‌آ‌پ بنر مدیریت وضعیت شماره‌گیری خروجی و مکالمه فعال وب‌آرتی‌سی
+// 🚀 ارتقا پاپ‌آپ: بنر یکپارچه مدیریت وضعیت شماره‌گیری خروجی و مکالمه فعال وب‌آرتی‌سی
 // ============================================================================
 function ActiveCallBanner({ session, sipCallState, isCallOnHold, onToggleHold, onDecline }) {
   const [duration, setCallDuration] = useState(0);
@@ -165,15 +165,27 @@ export default function App() {
   const uaRef = useRef(null);
   const currentSessionRef = useRef(null);
 
+  // 🔧 Unmount cleanup — prevents SSL error on page refresh
+  useEffect(() => {
+    return () => {
+      if (uaRef.current) {
+        try {
+          uaRef.current.unregister({ all: true });
+          uaRef.current.stop();
+        } catch (e) {}
+        uaRef.current = null;
+      }
+    };
+  }, []);
+
   // فیلدهای فرم کارتابل کارشناس
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // 🟢 REFACTORED: Advanced Draft-Preserving Multi-Wrapup Queue Framework State Map
-  const [pendingWrapups, setPendingWrapups] = useState([]);
-  const [activeWrapupIndex, setActiveWrapupIndex] = useState(-1); 
+  const [wrapupData, setWrapupData] = useState(null); 
+  const [wrapupForm, setWrapupForm] = useState({ disposition: '', notes: '' });
   const [isSubmittingWrapup, setIsSubmittingWrapup] = useState(false);
   const [wrapupError, setWrapupError] = useState('');
 
@@ -222,12 +234,17 @@ export default function App() {
   }, [refreshTrigger]);
 
   const fetchDashboardData = (silent = false) => {
-    if (!silent) setLoading(true); 
+    if (!silent) setLoading(true);
     axios.get('/api/dashboard/data/')
       .then(res => {
         setAgentData(res.data);
         setLoading(false);
-        if (res.data.extension_number && res.data.extension_number !== "Not Assigned" && res.data.extension_secret) {
+        if (
+          res.data.extension_number &&
+          res.data.extension_number !== "Not Assigned" &&
+          res.data.extension_secret &&
+          !uaRef.current  // 🔧 only init if UA doesn't exist yet
+        ) {
           initializeWebRTC(res.data.extension_number, res.data.extension_secret);
         }
       })
@@ -237,73 +254,179 @@ export default function App() {
       });
   };
 
+  const handleWrapupFormSubmit = (e) => {
+    e.preventDefault();
+    setIsSubmittingWrapup(true);
+    setWrapupError('');
+
+    axios.post('/api/call/wrapup/save/', {
+      phone_number: wrapupData.phone_number,
+      disposition: wrapupForm.disposition,
+      notes: wrapupForm.notes,
+    })
+      .then(() => {
+        setWrapupData(null);
+        setIsSubmittingWrapup(false);
+        setRefreshTrigger(prev => prev + 1);
+      })
+      .catch(err => {
+        setWrapupError(err.response?.data?.message || 'خطا در ثبت اطلاعات. دوباره تلاش کنید.');
+        setIsSubmittingWrapup(false);
+      });
+  };
+
   const initializeWebRTC = (extension, secret) => {
-    if (uaRef.current) return; 
-
-    console.log(`🔌 Initializing WebRTC PJSIP Engine for Line Extension: ${extension}`);
-
-    const socket = new JsSIP.WebSocketInterface('wss://192.168.100.115:8089/ws'); 
     const webrtcExtension = `8${extension}`;
+    console.log(`🔌 Initializing WebRTC PJSIP Engine for extension: ${webrtcExtension}`);
+
+    // 🔧 Clean up any existing UA properly before creating a new one
+    if (uaRef.current) {
+      try {
+        uaRef.current.unregister({ all: true });
+      } catch (e) {}
+      setTimeout(() => {
+        try { uaRef.current.stop(); } catch (e) {}
+        uaRef.current = null;
+        _startUA(webrtcExtension, secret);
+      }, 500);
+      return;
+    }
+
+    _startUA(webrtcExtension, secret);
+  };
+
+  const _startUA = (webrtcExtension, secret) => {
+    const socket = new JsSIP.WebSocketInterface('wss://192.168.100.115:8089/ws');
 
     const config = {
       sockets: [socket],
-      uri: `sip:${webrtcExtension}@192.168.100.115`, 
-      authorization_user: webrtcExtension,           
-      password: secret,                              
+      uri: `sip:${webrtcExtension}@192.168.100.115`,
+      authorization_user: webrtcExtension,
+      password: secret,
       register: true,
       session_timers: false,
-      realm: 'asterisk'
+      realm: 'asterisk',
+      register_expires: 30,                  // short expiry → stale contacts die fast
+      connection_recovery_min_interval: 2,
+      connection_recovery_max_interval: 10,
+      no_answer_timeout: 60,
     };
 
     const ua = new JsSIP.UA(config);
     uaRef.current = ua;
 
+    // ── Registration events ──────────────────────────────────────────
     ua.on('registered', () => {
+      console.log('✅ SIP Registered');
       setSipRegistered(true);
       setSipError('');
     });
 
+    ua.on('unregistered', () => {
+      console.warn('⚠️ SIP Unregistered');
+      setSipRegistered(false);
+    });
+
     ua.on('registrationFailed', (e) => {
+      console.error('❌ Registration failed:', e.cause);
       setSipRegistered(false);
       setSipError(`خطا در اتصال تلفن داخلی: ${e.cause}`);
     });
 
+    // 🔧 WebSocket dropped silently → re-register when it comes back
+    ua.on('disconnected', () => {
+      console.warn('🔌 WebSocket disconnected');
+      setSipRegistered(false);
+    });
+
+    ua.on('connected', () => {
+      console.log('🔌 WebSocket connected');
+    });
+
+    // ── Incoming / Outgoing calls ────────────────────────────────────
     ua.on('newRTCSession', (data) => {
       const session = data.session;
+
+      // 🔧 Terminate any ghost session before accepting the new one
+      if (currentSessionRef.current && currentSessionRef.current !== session) {
+        try { currentSessionRef.current.terminate(); } catch (e) {}
+        currentSessionRef.current = null;
+      }
+
       currentSessionRef.current = session;
       setActiveSipSession(session);
+      setIsCallOnHold(false);
 
       if (session.direction === 'incoming') {
+        console.log('📞 Incoming call from:', session.remote_identity.uri.user);
         setSipCallState('RINGING');
         setActiveCall({
           caller: session.remote_identity.display_name || session.remote_identity.uri.user,
-          number: session.remote_identity.uri.user
+          number: session.remote_identity.uri.user,
         });
+      } else {
+        console.log('📤 Outgoing call to:', session.remote_identity.uri.user);
       }
+
+      // 🔧 'confirmed' is more reliable than 'accepted' for knowing the call is live
+      session.on('confirmed', () => {
+        console.log('✅ Call confirmed/connected');
+        setSipCallState('CONNECTED');
+        setActiveCall(null);
+      });
 
       session.on('accepted', () => {
         setSipCallState('CONNECTED');
-        setActiveCall(null); 
+        setActiveCall(null);
       });
 
-      session.on('hold', () => setIsCallOnHold(true));
-      session.on('unhold', () => setIsCallOnHold(false));
+      session.on('hold', () => {
+        console.log('⏸ Call on hold');
+        setIsCallOnHold(true);
+      });
 
-      session.on('ended', () => {
+      session.on('unhold', () => {
+        console.log('▶️ Call resumed');
+        setIsCallOnHold(false);
+      });
+
+      session.on('ended', (e) => {
+        console.log('📵 Call ended:', e.cause);
         handleCallCleanup();
         setTimeout(() => setRefreshTrigger(prev => prev + 1), 2200);
       });
 
-      session.on('failed', () => {
+      session.on('failed', (e) => {
+        console.warn('❌ Call failed:', e.cause);
+
+        // 🔧 CANCEL = softphone answered via Follow Me, not a real error
+        if (e.cause === JsSIP.C.causes.CANCELED) {
+          console.log('ℹ️ Call canceled (Follow Me resolved elsewhere)');
+          handleCallCleanup();
+          return;
+        }
+
         handleCallCleanup();
         setTimeout(() => setRefreshTrigger(prev => prev + 1), 2200);
       });
 
-      session.on('peerconnection', (data) => {
-        data.peerconnection.addEventListener('track', (e) => {
+      // 🔧 Remote audio — handles both 'track' (modern) and 'addstream' (fallback)
+      session.on('peerconnection', (pcData) => {
+        const pc = pcData.peerconnection;
+
+        pc.addEventListener('track', (e) => {
+          console.log('🔊 Remote audio track received');
           const remoteAudio = document.getElementById('webRtcRemoteAudio');
           if (remoteAudio && e.streams[0]) {
             remoteAudio.srcObject = e.streams[0];
+            remoteAudio.play().catch(err => console.warn('Audio play blocked:', err));
+          }
+        });
+
+        pc.addEventListener('addstream', (e) => {
+          const remoteAudio = document.getElementById('webRtcRemoteAudio');
+          if (remoteAudio && e.stream) {
+            remoteAudio.srcObject = e.stream;
           }
         });
       });
@@ -318,6 +441,14 @@ export default function App() {
     currentSessionRef.current = null;
     setActiveCall(null);
     setIsCallOnHold(false);
+
+    // 🔧 Re-register if UA lost registration during the call
+    setTimeout(() => {
+      if (uaRef.current && !uaRef.current.isRegistered()) {
+        console.warn('⚠️ UA lost registration after cleanup — re-registering');
+        uaRef.current.register();
+      }
+    }, 500);
   };
 
   const handleNativeSipAnswer = () => {
@@ -343,13 +474,6 @@ export default function App() {
     }
   };
 
-  // 🟢 COMPLIANCE BUSINESS SIDE EFFECT: Automatically minimize wrapup forms when a call arrives
-  useEffect(() => {
-    if (sipCallState === 'RINGING' || sipCallState === 'CONNECTED') {
-      setActiveWrapupIndex(-1); // Automatically force minimization to clear viewport!
-    }
-  }, [sipCallState]);
-
   useEffect(() => {
     if (!isAuthenticated) return; 
     const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
@@ -360,21 +484,11 @@ export default function App() {
       if (data.type === 'clear_notification') {
         if (sipCallState === 'IDLE') setActiveCall(null);
         setRefreshTrigger(prev => prev + 1);
-      } 
-      // 🟢 REFACTORED: Safely push inbound signals into draft array repository blocks
-      else if (data.type === 'show_wrapup') {
+      } else if (data.type === 'show_wrapup') {
         setActiveCall(null); 
+        setWrapupForm({ disposition: '', notes: '' }); 
         setWrapupError('');
-        setPendingWrapups(prev => [
-          ...prev,
-          {
-            id: Date.now() + Math.random(),
-            phone_number: data.phone_number,
-            caller_name: data.caller_name || 'مشتری خارجی',
-            disposition: '',
-            notes: ''
-          }
-        ]);
+        setWrapupData({ phone_number: data.phone_number, caller_name: data.caller_name || 'مشتری خارجی' });
       }
     };
     return () => socket.close();
@@ -426,6 +540,7 @@ export default function App() {
       currentSessionRef.current = session;
       setActiveSipSession(session);
       
+      // فعال‌سازی فوری وضعیت شماره‌گیری برای رندر گرفتن بنر بالایی
       setSipCallState('RINGING'); 
       
       setTimeout(() => setDialingPhone(null), 1000);
@@ -484,7 +599,10 @@ export default function App() {
         setCurrentAudio(null);
         setSelectedPhone(null);
         if (uaRef.current) {
-          uaRef.current.stop();
+          try {
+            uaRef.current.unregister({ all: true });
+            uaRef.current.stop();
+          } catch (e) {}
           uaRef.current = null;
         }
         setSipRegistered(false);
@@ -506,47 +624,6 @@ export default function App() {
   const triggerDrawerOpening = (phoneNum, isAgentCheck) => {
     setIsAgentProfile(isAgentCheck);
     setSelectedPhone(phoneNum);
-  };
-
-  // 🟢 REFACTORED: Advanced inline array modification map handler to protect active drafts
-  const handleUpdateActiveWrapupField = (field, value) => {
-    setPendingWrapups(prev => prev.map((item, idx) => 
-      idx === activeWrapupIndex ? { ...item, [field]: value } : item
-    ));
-  };
-
-  // 🟢 REFACTORED: Secure form validation poster mapping into Django endpoint definitions
-  const handleWrapupFormSubmit = (e) => {
-    e.preventDefault();
-    if (activeWrapupIndex === -1) return;
-
-    setIsSubmittingWrapup(true);
-    setWrapupError('');
-
-    const targetedCall = pendingWrapups[activeWrapupIndex];
-
-    const params = new URLSearchParams();
-    params.append('phone_number', targetedCall.phone_number);
-    params.append('business_disposition', targetedCall.disposition);
-    params.append('notes', targetedCall.notes);
-
-    axios.post('/api/v1/calls/wrapup/', params, {
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-    })
-    .then(res => {
-      if (res.data.status === 'success') {
-        // Drop the completed object block out of the array state tracker safely
-        setPendingWrapups(prev => prev.filter((_, idx) => idx !== activeWrapupIndex));
-        setActiveWrapupIndex(-1);
-      } else {
-        setWrapupError(res.data.message || 'خطا در ثبت اطلاعات فرآیند.');
-      }
-      setIsSubmittingWrapup(false);
-    })
-    .catch(err => {
-      setWrapupError(err.response?.data?.message || 'خطا در برقراری ارتباط با هسته سی‌آر‌ام.');
-      setIsSubmittingWrapup(false);
-    });
   };
 
   // ============================================================================
@@ -618,10 +695,10 @@ export default function App() {
   }
 
   return (
-    <div className={`min-h-screen p-3 sm:p-6 relative overflow-x-hidden pb-40 transition-all duration-500 ${isDarkMode ? 'bg-gradient-to-br from-gray-950 via-slate-900 to-zinc-950 text-gray-100' : 'bg-gradient-to-br from-slate-50 via-zinc-100 to-gray-200 text-gray-800'}`} dir="rtl">
-      
-      {/* 🟢 BLUR TRIGGER: Blur if any active wrapup window is maximized on screen */}
-      <div className={`transition-all duration-300 ease-in-out will-change-[padding] ${selectedPhone ? 'xl:pl-96' : ''} ${activeWrapupIndex >= 0 ? 'blur-sm pointer-events-none' : ''}`}>
+    <>
+    <audio id="webRtcRemoteAudio" autoPlay style={{ display: 'none' }} />
+    <div className={`min-h-screen p-3 sm:p-6 relative overflow-x-hidden pb-40 transition-all duration-500 ${isDarkMode ? 'bg-gradient-to-br from-gray-950 via-slate-900 to-zinc-950 text-gray-100' : 'bg-gradient-to-br from-slate-50 via-zinc-100 to-gray-200 text-gray-800'}`} dir="rtl">      
+      <div className={`transition-all duration-300 ease-in-out will-change-[padding] ${selectedPhone ? 'xl:pl-96' : ''} ${wrapupData ? 'blur-sm pointer-events-none' : ''}`}>
         <header className="flex flex-col md:flex-row gap-4 justify-between items-center p-4 rounded-xl mb-6 border border-white/10 shadow-2xl glass-card">
           <div className="flex items-center gap-3">
             <div className={`h-3 w-3 rounded-full animate-pulse ${sipRegistered ? 'bg-green-500' : 'bg-red-500'}`}></div>
@@ -630,49 +707,10 @@ export default function App() {
           <div className="flex flex-wrap items-center justify-center md:justify-end gap-3 text-xs sm:text-sm font-semibold w-full md:w-auto">
             <button onClick={() => setIsDarkMode(!isDarkMode)} className={`p-2 rounded-md border transition-all flex items-center justify-center shadow-sm cursor-pointer ${isDarkMode ? 'bg-gray-800 text-yellow-400 border-gray-700 hover:bg-gray-700' : 'bg-white text-indigo-600 border-gray-300 hover:bg-gray-100'}`}>{isDarkMode ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}</button>
             <span className={`px-3 py-1.5 rounded-md border ${innerGlassClass} ${textSecondary}`}>کارشناس: <strong className={textPrimary}>{agentData?.agent_name}</strong></span>
-            
-            {/* 🟢 FEAT: Minimized Wrap-up File Buttons rendered directly next to the Username node */}
-            {pendingWrapups.map((item, index) => (
-              <button
-                key={item.id}
-                onClick={() => {
-                  if (sipCallState === 'IDLE') {
-                    setActiveWrapupIndex(index);
-                  } else {
-                    alert('در طول مکالمه فعال امکان ویرایش یا بازیابی خلاصه فرم معلق وجود ندارد.');
-                  }
-                }}
-                className="px-2.5 py-1.5 rounded-md text-xs font-bold flex items-center gap-1.5 border transition-all bg-amber-500/10 text-amber-400 border-amber-500/30 hover:bg-amber-500 hover:text-gray-950 shadow-sm animate-pulse"
-                title="جهت ماکسیمایز کردن و پر کردن فرم کلیک کنید"
-              >
-                <Lock className="h-3 w-3" />
-                <span>معلق: <strong className="font-mono">{item.phone_number}</strong></span>
-              </button>
-            ))}
-
             <span className={`px-3 py-1.5 rounded-md border ${innerGlassClass} ${textSecondary}`}>داخلی: <strong className="text-red-500 font-mono">{agentData?.extension_number}</strong></span>
             <button onClick={handleLogoutAction} className={`p-1.5 sm:p-2 border rounded-md transition flex items-center gap-1.5 cursor-pointer text-xs ${isDarkMode ? 'bg-gray-800 hover:bg-red-950 hover:text-red-400 text-gray-400 border-gray-700' : 'bg-white hover:bg-red-50 hover:text-red-600 text-gray-600 border-gray-300'}`}><LogOut className="h-3.5 w-3.5 transform rotate-180" /><span>خروج</span></button>
           </div>
         </header>
-
-        {/* 🟢 FEAT: Compliance Indicator Banner displayed right after an active call ends if pending queue is not empty */}
-        {sipCallState === 'IDLE' && pendingWrapups.length > 0 && activeWrapupIndex === -1 && (
-          <div className="bg-gradient-to-r from-amber-600 to-orange-700 text-white p-4 rounded-xl mb-6 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-4 border border-amber-500/30">
-            <div className="flex items-center gap-3 text-center sm:text-right">
-              <ShieldAlert className="h-6 w-6 text-amber-200 animate-bounce flex-shrink-0" />
-              <div>
-                <h3 className="font-black text-sm sm:text-base">⚠️ هشدار عدم انطباق: سوابق ثبت‌نشده در میز کار وجود دارد!</h3>
-                <p className="text-xs text-amber-100 mt-0.5">شما تعداد <strong className="font-mono bg-black/20 px-1.5 py-0.5 rounded text-white">{pendingWrapups.length} فرم معلق</strong> خلاصه مکالمه دارید. لطفاً یکی از خطوط معلق بالا را انتخاب و تکمیل نمایید.</p>
-              </div>
-            </div>
-            <button 
-              onClick={() => setActiveWrapupIndex(0)} 
-              className="w-full sm:w-auto bg-white hover:bg-amber-50 text-orange-900 font-black text-xs px-5 py-2.5 rounded-lg shadow-md transition whitespace-nowrap cursor-pointer"
-            >
-              🚀 باز کردن اولین فرم معلق
-            </button>
-          </div>
-        )}
 
         <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           <div className={`p-4 rounded-xl flex items-center justify-between ${glassClass}`}><div><p className={`text-xs font-bold tracking-wider ${textSecondary}`}>کل تماس‌ها</p><h3 className={`text-2xl font-black mt-1 font-mono ${textPrimary}`}>{stats.totalCallsCount}</h3></div><div className={`p-3 rounded-lg ${isDarkMode ? 'bg-gray-800 text-gray-400' : 'bg-slate-200 text-gray-600'}`}><BarChart3 className="h-5 w-5" /></div></div>
@@ -733,9 +771,9 @@ export default function App() {
         </div>
       </div>
 
-      {/* پاپ‌آ‌پ هوشمند تماس ورودی وب‌آرتی‌سی */}
+      {/* پاپ‌آپ هوشمند تماس ورودی وب‌آرتی‌سی */}
       {activeCall && sipCallState === 'RINGING' && (
-        <div className={`fixed bottom-4 left-4 right-4 sm:left-auto sm:right-6 sm:bottom-6 w-auto sm:w-80 border-r-8 rounded-xl p-4 sm:p-5 z-[60] shadow-2xl will-change-transform ${glassClass} border-amber-500 animate-pulse`}>
+        <div className={`fixed bottom-4 left-4 right-4 sm:left-auto sm:right-6 sm:bottom-6 w-auto sm:w-80 border-r-8 rounded-xl p-4 sm:p-5 z-50 shadow-2xl will-change-transform ${glassClass} border-amber-500 animate-pulse`}>
           <div className="flex items-start gap-4">
             <div className="p-2.5 sm:p-3 rounded-lg bg-amber-500/10 text-amber-400"><Phone className="h-5 w-5" /></div>
             <div className="flex-1 min-w-0">
@@ -751,7 +789,7 @@ export default function App() {
         </div>
       )}
 
-      {/* رندر از بنر لایو برای هر دو وضعیت شماره‌گیری خروجی و مکالمه متصل شده فعال */}
+      {/* ⚡ OPTIMIZATION: رندر گرفتن از بنر لایو برای هر دو وضعیت شماره‌گیری خروجی و مکالمه متصل شده فعال */}
       {((sipCallState === 'CONNECTED' || (sipCallState === 'RINGING' && activeSipSession?.direction === 'outgoing')) && activeSipSession) && (
         <ActiveCallBanner 
           session={activeSipSession} 
@@ -774,79 +812,43 @@ export default function App() {
         </div>
       )}
 
-      {/* 🟢 REFACTORED: Dynamic modal engine populates index values from array stack cleanly */}
-      {activeWrapupIndex >= 0 && (
-        (() => {
-          const activeWrapupItem = pendingWrapups[activeWrapupIndex];
-          return (
-            <div className="fixed inset-0 h-screen w-screen bg-gray-950/80 backdrop-blur-md flex items-center justify-center p-3 z-50 pointer-events-auto">
-              <div className={`w-full max-w-lg p-5 sm:p-8 rounded-2xl relative overflow-hidden max-h-[95vh] overflow-y-auto custom-scrollbar will-change-transform ${glassClass}`}>
-                <div className="absolute top-0 right-0 w-full h-1.5 bg-gradient-to-l from-red-500 to-amber-500"></div>
-                
-                <div className="flex items-start justify-between mb-5 border-b border-gray-700/20 pb-4">
-                  <div className="flex items-start gap-3">
-                    <div className="p-2.5 bg-amber-500/10 text-amber-400 rounded-xl border border-amber-500/20"><ClipboardCheck className="h-5 w-5" /></div>
-                    <div>
-                      <h3 className={`text-lg sm:text-xl font-black ${textPrimary}`}>ثبت اجباری خلاصه مکالمه</h3>
-                      <p className={`text-[11px] sm:text-xs mt-0.5 ${textSecondary}`}>ثبت سوابق تجاری فعال است.</p>
-                    </div>
-                  </div>
-                  {/* Minimize button inside modal allows agents to manually tuck it back away */}
-                  <button 
-                    onClick={() => setActiveWrapupIndex(-1)} 
-                    className="p-1 rounded-lg hover:bg-gray-800/40 border border-transparent hover:border-gray-700 transition"
-                  >
-                    <X className="h-4 w-4 text-gray-400" />
-                  </button>
-                </div>
-
-                <div className={`p-3 rounded-xl space-y-2 mb-5 ${innerGlassClass}`}>
-                  <div className="flex justify-between items-center text-[10px]"><span className={textMuted}>مخاطب تماس</span><span className={textMuted}>خط ارتباطی</span></div>
-                  <div className="flex justify-between items-center gap-4"><p className={`font-black text-sm truncate ${textPrimary}`}>{activeWrapupItem.caller_name}</p><p className="font-mono font-bold text-amber-400 text-left text-sm">{activeWrapupItem.phone_number}</p></div>
-                </div>
-
-                <form onSubmit={handleWrapupFormSubmit} className="space-y-4">
-                  <div>
-                    <label className={`block text-xs font-bold uppercase tracking-wide mb-2 ${textSecondary}`}>نتیجه نهایی کسب و کار <span className="text-red-500">*</span></label>
-                    <select 
-                      required 
-                      value={activeWrapupItem.disposition} 
-                      onChange={e => handleUpdateActiveWrapupField('disposition', e.target.value)} 
-                      className={`w-full border border-gray-700/60 rounded-lg p-3 text-sm focus:outline-none ${inputBg} ${textPrimary}`}
-                    >
-                      <option value="" disabled hidden>-- انتخاب نتیجه تماس --</option>
-                      <option value="SALE_CLOSED">🟢 فروش نهایی / قرارداد بسته شد</option>
-                      <option value="INTERESTED">🔵 مشتری علاقه‌مند / برنامه‌ریزی پیگیری</option>
-                      <option value="CALLBACK_REQUESTED">🟡 درخواست تماس مجدد / خط مشغول</option>
-                      <option value="REJECTED">🔴 عدم تمایل / قطع ارتباط فرآیند</option>
-                      <option value="SUPPORT_RESOLVED">🟣 تیکت پشتیبانی مشتری حل شد</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className={`block text-xs font-bold uppercase mb-2 ${textSecondary}`}>یادداشت جزئیات تماس</label>
-                    <div className="relative">
-                      <FileText className="absolute right-3 top-3.5 h-4 w-4 text-gray-500" />
-                      <textarea 
-                        required 
-                        value={activeWrapupItem.notes} 
-                        onChange={e => handleUpdateActiveWrapupField('notes', e.target.value)} 
-                        rows="3" 
-                        className={`w-full border border-gray-700/60 rounded-lg p-3 pr-10 text-sm focus:outline-none ${inputBg} ${textPrimary}`} 
-                        placeholder="خلاصه جزئیات درخواست کاربر..." 
-                      />
-                    </div>
-                  </div>
-                  {wrapupError && (<div className="bg-red-950/40 border border-red-900 text-red-400 text-xs p-3 rounded-lg flex items-center gap-2"><AlertTriangle className="h-4 w-4" /> {wrapupError}</div>)}
-                  <button type="submit" disabled={isSubmittingWrapup || !activeWrapupItem.disposition} className="w-full bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-gray-950 font-black text-sm p-3 rounded-lg flex items-center justify-center gap-2 transition cursor-pointer"><CheckCircle className="h-4 w-4" />ثبت اطلاعات و باز کردن میز کار</button>
-                </form>
-              </div>
+      {/* مدال گزارش مکالمه Wrap-Up */}
+      {wrapupData && (
+        <div className="fixed inset-0 h-screen w-screen bg-gray-950/80 backdrop-blur-md flex items-center justify-center p-3 z-50 pointer-events-auto">
+          <div className={`w-full max-w-lg p-5 sm:p-8 rounded-2xl relative overflow-hidden max-h-[95vh] overflow-y-auto custom-scrollbar will-change-transform ${glassClass}`}>
+            <div className="absolute top-0 right-0 w-full h-1.5 bg-gradient-to-l from-red-500 to-amber-500"></div>
+            <div className="flex items-start gap-3 mb-5 border-b border-gray-700/20 pb-4">
+              <div className="p-2.5 bg-amber-500/10 text-amber-400 rounded-xl border border-amber-500/20"><ClipboardCheck className="h-5 w-5" /></div>
+              <div><h3 className={`text-lg sm:text-xl font-black ${textPrimary}`}>ثبت اجباری خلاصه مکالمه</h3><p className={`text-[11px] sm:text-xs mt-0.5 ${textSecondary}`}>میز کار قفل شد. ثبت سوابق تجاری فعال است.</p></div>
             </div>
-          );
-        })()
+            <div className={`p-3 rounded-xl space-y-2 mb-5 ${innerGlassClass}`}>
+              <div className="flex justify-between items-center text-[10px]"><span className={textMuted}>مخاطب تماس</span><span className={textMuted}>خط ارتباطی</span></div>
+              <div className="flex justify-between items-center gap-4"><p className={`font-black text-sm truncate ${textPrimary}`}>{wrapupData.caller_name}</p><p className="font-mono font-bold text-amber-400 text-left text-sm">{wrapupData.phone_number}</p></div>
+            </div>
+            <form onSubmit={handleWrapupFormSubmit} className="space-y-4">
+              <div>
+                <label className={`block text-xs font-bold uppercase tracking-wide mb-2 ${textSecondary}`}>نتیجه نهایی کسب و کار <span className="text-red-500">*</span></label>
+                <select required value={wrapupForm.disposition} onChange={e => setWrapupForm({ ...wrapupForm, disposition: e.target.value })} className={`w-full border border-gray-700/60 rounded-lg p-3 text-sm focus:outline-none ${inputBg} ${textPrimary}`}>
+                  <option value="" disabled hidden>-- انتخاب نتیجه تماس --</option>
+                  <option value="SALE_CLOSED">🟢 فروش نهایی / قرارداد بسته شد</option>
+                  <option value="INTERESTED">🔵 مشتری علاقه‌مند / برنامه‌ریزی پیگیری</option>
+                  <option value="CALLBACK_REQUESTED">🟡 درخواست تماس مجدد / خط مشغول</option>
+                  <option value="REJECTED">🔴 عدم تمایل / قطع ارتباط فرآیند</option>
+                  <option value="SUPPORT_RESOLVED">🟣 تیکت پشتیبانی مشتری حل شد</option>
+                </select>
+              </div>
+              <div>
+                <label className={`block text-xs font-bold uppercase mb-2 ${textSecondary}`}>یادداشت جزئیات تماس</label>
+                <div className="relative"><FileText className="absolute right-3 top-3.5 h-4 w-4 text-gray-500" /><textarea required value={wrapupForm.notes} onChange={e => setWrapupForm({ ...wrapupForm, notes: e.target.value })} rows="3" className={`w-full border border-gray-700/60 rounded-lg p-3 pr-10 text-sm focus:outline-none ${inputBg} ${textPrimary}`} placeholder="خلاصه جزئیات درخواست کارب..." /></div>
+              </div>
+              {wrapupError && (<div className="bg-red-950/40 border border-red-900 text-red-400 text-xs p-3 rounded-lg flex items-center gap-2"><AlertTriangle className="h-4 w-4" /> {wrapupError}</div>)}
+              <button type="submit" disabled={isSubmittingWrapup || !wrapupForm.disposition} className="w-full bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-gray-950 font-black text-sm p-3 rounded-lg flex items-center justify-center gap-2 transition cursor-pointer"><CheckCircle className="h-4 w-4" />ثبت اطلاعات و باز کردن میز کار</button>
+            </form>
+          </div>
+        </div>
       )}
 
-      {/* المنت صوتی دوردست صوتی مخفی وب‌آرتی‌سی جهت کانال‌های صوتی استریم ریز */}
-      <audio id="webRtcRemoteAudio" autoPlay className="hidden" />
     </div>
+  </>
   );
 }
