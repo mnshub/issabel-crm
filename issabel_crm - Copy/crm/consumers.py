@@ -51,3 +51,26 @@ class CallConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps({
             'type': 'clear_notification'
         }))
+
+    # ============================================================================
+    # 🧪 TEST & PRODUCTION BRIDGE METHOD FOR CALL WRAP-UP OVERLAY
+    # ============================================================================
+    # This handler matches the "show_wrapup" message type emitted by the AMI listener.
+    # It receives the broadcast from the group and pushes it live down the WebSocket pipe.
+    # Keep this method here permanently; it serves both testing and live production!
+    # ============================================================================
+    async def show_wrapup(self, event):
+        """Catches 'show_wrapup' event from channel layer and forwards it via WebSocket to React JS."""
+        print(f"🚀 DEBUG Consumer: Intercepted WRAPUP event on group layer. Forwarding payload downstream to {self.group_name}...")
+        
+        # Pull parameters safely with reliable defaults if they are missing
+        phone_number = event.get('phone_number', 'Unknown')
+        caller_name = event.get('caller_name', 'Internal Call')
+        
+        # Construct the exact data footprint that your React frontend's socket.onmessage expects
+        await self.send(text_data=json.dumps({
+            'type': 'show_wrapup',
+            'phone_number': phone_number,
+            'caller_name': caller_name
+        }))
+        print(f"✅ DEBUG Consumer: Payload successfully written to WebSocket client track.")

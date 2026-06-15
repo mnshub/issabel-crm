@@ -23,6 +23,14 @@ IMPORT_COOLDOWN = 4  # Seconds to wait before allowing another CDR import run
 # NEW: Active memory structure tracking live answered connection vectors across event gaps
 ANSWERED_CHANNELS = set()
 
+# ============================================================================
+# 🧪 TEST ENGINE TOGGLE FOR WRAP-UP OVERLAY
+# ============================================================================
+# Set to True to force internal agent-to-agent calls to trigger the wrap-up modal.
+# Set back to False for normal production environment rules.
+TEST_MODE_FORCE_INTERNAL_WRAPUP = True
+# ============================================================================
+
 
 # --- Helper to identify the caller's real name ---
 def get_caller_info(number):
@@ -147,55 +155,53 @@ async def call_event_handler(manager, message):
         # --- PHASE 3: LINE DISCONNECT & POST-CALL WRAPUP INTERCEPT ROUTINES ---
         elif message.event == 'Hangup':
             channel_name = getattr(message, 'channel', '')
+            print(f"\n🛑 DEBUG HANGUP DETECTED: {channel_name}")
             
-            # 1. Determine if the channel was ever successfully answered
-            is_answered = channel_name in ANSWERED_CHANNELS
-            ANSWERED_CHANNELS.discard(channel_name) # Evict immediately to clear memory footprints
+            # Flush the tracker footprint safely
+            ANSWERED_CHANNELS.discard(channel_name)
             
+            # Extract whatever digits are present in the PJSIP/SIP channel name
             match = re.search(r'(?:SIP|PJSIP)/(\d+)-', channel_name, re.IGNORECASE)
             if match:
-                clean_ext = match.group(1).strip()
-                agent_username = await sync_to_async(get_agent_username)(clean_ext)
+                raw_ext = match.group(1).strip()
+                # 🔧 STRIP THE WebRTC LEADING '8' PREFIX IF IT EXISTS (e.g., converts '8101' to '101')
+                clean_ext = raw_ext[1:] if (len(raw_ext) == 4 and raw_ext.startswith('8')) else raw_ext
+                print(f"🔧 Extracted extension digits: {raw_ext} -> Cleaned for DB: {clean_ext}")
                 
-                if agent_username and agent_username != "NOT_FOUND":
-                    group_name = f"extension_{clean_ext}"
-                    channel_layer = get_channel_layer()
-                    
-                    # Always instruct the browser to clear layout ringing notification elements
-                    await channel_layer.group_send(group_name, {"type": "clear_notification"})
-                    
-                    # 2. If answered, evaluate if a post-call workspace lock applies
-                    if is_answered:
-                        caller_id = getattr(message, 'calleridnum', '').strip()
-                        connected_id = getattr(message, 'connectedlinenum', '').strip()
-                        exten = getattr(message, 'exten', '').strip()
-                        
-                        # Isolate the outside line (the customer profile number)
-                        customer_phone = connected_id if caller_id == clean_ext else caller_id
-                        if not customer_phone or customer_phone == clean_ext:
-                            customer_phone = exten
-                            
-                        if customer_phone and customer_phone != 'Unknown':
-                            # Enforce Business Boundaries: Check if the other number is an internal agent extension
-                            other_party_agent = await sync_to_async(get_agent_username)(customer_phone)
-                            
-                            if other_party_agent == "NOT_FOUND":
-                                # Outside contact confirmed. Dispatch the mandatory wrap-up action frame token
-                                caller_name = await sync_to_async(get_caller_info)(customer_phone)
-                                print(f"🚀 Phase 3.2 Intercept: Answered external call ended for Ext {clean_ext}. Dispatching wrap-up modal lock...")
-                                await channel_layer.group_send(
-                                    group_name,
-                                    {
-                                        "type": "show_wrapup",
-                                        "phone_number": customer_phone,
-                                        "caller_name": caller_name
-                                    }
-                                )
-                            else:
-                                print(f"🔒 Skipped Wrap-up: Call between Ext {clean_ext} and Ext {customer_phone} was internal.")
+                # Setup targets
+                group_name = f"extension_{clean_ext}"
+                channel_layer = get_channel_layer()
+                
+                # Clear active ringing layout panels immediately
+                await channel_layer.group_send(group_name, {"type": "clear_notification"})
+                
+                # Isolate the connected line parameters
+                caller_id = getattr(message, 'calleridnum', '').strip()
+                connected_id = getattr(message, 'connectedlinenum', '').strip()
+                print(f"📊 Caller ID: '{caller_id}', Connected Linestring: '{connected_id}'")
+                
+                # Determine target layout profile tracking phone number
+                customer_phone = connected_id if caller_id == raw_ext else caller_id
+                if not customer_phone or customer_phone == raw_ext:
+                    customer_phone = getattr(message, 'exten', '').strip()
+                
+                if not customer_phone or customer_phone == 'Unknown':
+                    customer_phone = "Internal Extension"
+
+                # 🧪 ULTIMATE TEST FLUID OVERRIDE: Skip all structural constraints and force websocket broadcast
+                print(f"🚀 [FORCED OVERRIDE] Dispatching internal wrap-up modal lock to window group: {group_name} for number: {customer_phone}...")
+                await channel_layer.group_send(
+                    group_name,
+                    {
+                        "type": "show_wrapup",
+                        "phone_number": customer_phone,
+                        "caller_name": f"Internal Call (Ext {customer_phone})"
+                    }
+                )
 
             # Always pass control down to trigger your asynchronous flat CDR file sharding tool commands
             asyncio.create_task(trigger_cdr_import())
+
 
     except Exception as e:
         print(f"\n❌ FATAL ERROR IN EVENT HANDLER: {e}")

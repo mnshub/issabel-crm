@@ -35,6 +35,7 @@ class Customer(models.Model):
     company_name = models.CharField(max_length=100, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    notes = models.TextField(blank=True, default="", help_text="Historical timeline logs compiled across wrapups")
 
     def __str__(self):
         if self.first_name or self.last_name:
