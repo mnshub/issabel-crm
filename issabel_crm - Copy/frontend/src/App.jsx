@@ -5,7 +5,7 @@ import { Phone, User, Activity, LogOut, CheckCircle, XCircle, X, Save, FileText,
 
 // تنظیم هدرهای پیش‌فرض اکسپورت فرکانس‌های میان‌سایتی به بک‌اند جنگو
 axios.defaults.baseURL = 'http://127.0.0.1:8000';
-axios.defaults.withCredentials = true; // اجبار پاس‌دادن کوکی‌های امنیتی سشن
+axios.defaults.withCredentials = true; 
 axios.defaults.xsrfCookieName = 'csrftoken';
 axios.defaults.xsrfHeaderName = 'X-CSRFToken';
 
@@ -16,8 +16,8 @@ const CallListSection = React.memo(({ title, icon, badgeColor, calls, dialingPho
   const textPrimary = isDarkMode ? "text-white" : "text-gray-900";
   const textSecondary = isDarkMode ? "text-gray-400" : "text-gray-600";
 
-  // 🔧 TRACKING INSTANCE: Deduplication blocker
-  const assignedButtons = new Set();
+  // 🔧 TRACKING INSTANCE: Only used for RAM items (WebSocket events) that don't have a DB ID yet
+  const assignedRamButtons = new Set();
 
   return (
     <div style={{ contain: 'content' }} className={`p-4 sm:p-5 rounded-xl shadow-lg transition-colors duration-300 ${isDarkMode ? "bg-gray-900/95 border border-white/10" : "bg-white border border-gray-200/80"}`}>
@@ -35,14 +35,22 @@ const CallListSection = React.memo(({ title, icon, badgeColor, calls, dialingPho
           const cleanDigits = (num) => String(num || '').replace(/[^0-9]/g, '').trim();
           const rowNum = cleanDigits(call.other_phone);
 
-          // Find if this phone number is present in our HYDRATED memory queue
-          const pendingWrapup = wrapupQueue.find(item => cleanDigits(item.phone_number) === rowNum);
+          // 🚨 EXACT MAPPING ENGINE: Match by DB ID first, fallback to phone number if it's a RAM event
+          const pendingWrapup = wrapupQueue.find(item => {
+            if (item.callId) {
+              return item.callId === call.id; // Strict Database Match
+            } else {
+              return cleanDigits(item.phone_number) === rowNum; // Fallback RAM Match
+            }
+          });
 
-          // 🚨 DEDUPLICATION: Only show if pending, uncompleted in DB, AND no button rendered yet
-          const showWrapupButton = pendingWrapup && call.wrapup_completed !== true && !assignedButtons.has(rowNum);
+          const isRamItem = pendingWrapup && pendingWrapup.callId === null;
+          
+          // Show button if the exact DB record is incomplete OR if it's a new RAM item on its first row appearance
+          const showWrapupButton = pendingWrapup && (!isRamItem || !assignedRamButtons.has(rowNum));
 
-          if (showWrapupButton) {
-            assignedButtons.add(rowNum); 
+          if (showWrapupButton && isRamItem) {
+            assignedRamButtons.add(rowNum); // Lock this RAM button to avoid bleeding to historical rows
           }
 
           return (
@@ -83,7 +91,7 @@ const CallListSection = React.memo(({ title, icon, badgeColor, calls, dialingPho
                 )}
 
                 {/* 🎵 INLINE AUDIO PLAYER IN HISTORY ROW */}
-                {(call.disposition === 'ANSWERED' || showWrapupButton) && call.id && (
+                {(call.disposition === 'ANSWERED' || (showWrapupButton && call.disposition === 'ANSWERED')) && call.id && (
                   <button 
                     onClick={(e) => { e.stopPropagation(); onLoadAudio(call.id, call.display_name); }} 
                     className={`p-1.5 rounded-md border text-xs flex items-center gap-1 font-bold transition-all ${isDarkMode ? 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700 hover:text-white' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'}`}
@@ -272,7 +280,7 @@ export default function App() {
       });
   };
 
-  const handleQueueWrapupSubmit = (e, queueId, targetPhone, formDisposition, formNotes) => {
+  const handleQueueWrapupSubmit = (e, queueId, targetPhone, formDisposition, formNotes, targetCallId) => {
     e.preventDefault();
     if (!formDisposition) return;
 
@@ -283,6 +291,7 @@ export default function App() {
       phone_number: targetPhone,
       disposition: formDisposition,
       notes: formNotes,
+      call_id: targetCallId // Optional exact lock
     })
       .then(() => {
         console.log("✅ Wrap-up submitted successfully.");
@@ -290,13 +299,18 @@ export default function App() {
         // ⚡ OPTIMISTIC UI: Remove from RAM instantly
         setWrapupQueue(prevQueue => prevQueue.filter(item => item.id !== queueId));
         
-        // ⚡ OPTIMISTIC UI: Mark completed in local database cache instantly so the button vanishes
+        // ⚡ OPTIMISTIC UI: Mark exact matched completed in local database cache
         if (agentData) {
             const newData = { ...agentData };
             const cleanDigits = (n) => String(n || '').replace(/[^0-9]/g, '');
-            const markCompleted = (calls) => calls.map(c => 
-                cleanDigits(c.other_phone) === cleanDigits(targetPhone) ? { ...c, wrapup_completed: true } : c
-            );
+            const markCompleted = (calls) => calls.map(c => {
+                if (targetCallId) {
+                    return c.id === targetCallId ? { ...c, wrapup_completed: true } : c;
+                } else {
+                    return cleanDigits(c.other_phone) === cleanDigits(targetPhone) && c.wrapup_completed === false 
+                           ? { ...c, wrapup_completed: true } : c;
+                }
+            });
             if (newData.inbound_calls) newData.inbound_calls = markCompleted(newData.inbound_calls);
             if (newData.outbound_calls) newData.outbound_calls = markCompleted(newData.outbound_calls);
             setAgentData(newData);
@@ -434,7 +448,8 @@ export default function App() {
           caller_name: data.caller_name || 'مشتری خارجی',
           timestamp: new Date().toLocaleTimeString('fa-IR'),
           disposition: '',
-          notes: ''
+          notes: '',
+          callId: null // DB ID Unknown at this microsecond
         };
 
         setWrapupQueue(prevQueue => [...prevQueue, newWrapupItem]);
@@ -566,47 +581,42 @@ export default function App() {
     setSelectedPhone(phoneNum);
   };
 
-  const getCallLogContext = (phoneNumber) => {
-    const historicalPool = [...(agentData?.inbound_calls || []), ...(agentData?.outbound_calls || [])];
-    const match = historicalPool.find(call => String(call.other_phone).trim() === String(phoneNumber).trim());
-    return match ? { id: match.id, duration: match.duration, time: match.call_time, disposition: match.disposition } : null;
-  };
-
-  // ============================================================================
-  // ⚡ 📥 STATE HYDRATION ENGINE
-  // ============================================================================
+  // ----------------------------------------------------------------------
+  // ⚡ 📥 EXACT DB ID HYDRATION ENGINE: Combines Live WebSocket RAM with Database State!
+  // ----------------------------------------------------------------------
   const unifiedPendingWrapups = useMemo(() => {
-    const pendingMap = new Map();
+    const pendingItems = [];
     const cleanDigits = (num) => String(num || '').replace(/[^0-9]/g, '').trim();
     const allCalls = [...(agentData?.inbound_calls || []), ...(agentData?.outbound_calls || [])];
 
-    wrapupQueue.forEach(w => {
-      const num = cleanDigits(w.phone_number);
-      const dbMatch = allCalls.find(c => cleanDigits(c.other_phone) === num);
-      pendingMap.set(num, {
-        ...w,
-        callId: dbMatch ? dbMatch.id : null
-      });
-    });
-
+    // 1. Pull strict unfinished records exactly from the Database
     allCalls.forEach(call => {
       if (call.wrapup_completed === false) {
-        const num = cleanDigits(call.other_phone);
-        if (!pendingMap.has(num)) {
-          pendingMap.set(num, {
-            id: 'db_wrapup_' + call.id, 
-            callId: call.id,
-            phone_number: call.other_phone,
-            caller_name: call.display_name,
-            timestamp: call.call_time,
-            disposition: '',
-            notes: ''
-          });
-        }
+        pendingItems.push({
+          id: 'db_wrapup_' + call.id, 
+          callId: call.id,
+          phone_number: call.other_phone,
+          caller_name: call.display_name,
+          timestamp: call.call_time,
+          disposition: '',
+          notes: ''
+        });
       }
     });
 
-    return Array.from(pendingMap.values());
+    // 2. Append new Live RAM items ONLY if DB hasn't created a record for that number yet
+    wrapupQueue.forEach(w => {
+      const num = cleanDigits(w.phone_number);
+      const hasDbEquivalent = pendingItems.some(p => cleanDigits(p.phone_number) === num);
+      if (!hasDbEquivalent) {
+        pendingItems.push({
+          ...w,
+          callId: null // Marks this as a RAM-only event that needs time to sync
+        });
+      }
+    });
+
+    return pendingItems;
   }, [wrapupQueue, agentData]);
 
   // ============================================================================
@@ -632,6 +642,28 @@ export default function App() {
       call.display_name.toLowerCase().includes(searchQuery.toLowerCase()) || call.other_phone.includes(searchQuery)
     );
   }, [agentData?.outbound_calls, searchQuery]);
+
+  // ----------------------------------------------------------------------
+  // ⚡ REACTIVE AUDIO CONTEXT: Grabs actual DB status for the modal even after RAM opens
+  // ----------------------------------------------------------------------
+  const getExactCallContext = (callId, phone) => {
+    const allCalls = [...(agentData?.inbound_calls || []), ...(agentData?.outbound_calls || [])];
+    if (callId) return allCalls.find(c => c.id === callId);
+    const cleanDigits = (n) => String(n || '').replace(/[^0-9]/g, '').trim();
+    return allCalls.find(c => cleanDigits(c.other_phone) === cleanDigits(phone));
+  };
+
+  let liveCallContext = null;
+  let liveCallId = null;
+  let isAnswered = null;
+
+  if (activeWrapupItem) {
+    liveCallContext = getExactCallContext(activeWrapupItem.callId, activeWrapupItem.phone_number);
+    liveCallId = activeWrapupItem.callId || (liveCallContext ? liveCallContext.id : null);
+    isAnswered = liveCallContext ? liveCallContext.disposition === 'ANSWERED' : null;
+  }
+
+  // ----------------------------------------------------------------------
 
   if (authLoading) {
     return (
@@ -673,19 +705,6 @@ export default function App() {
         </div>
       </div>
     );
-  }
-
-  // ----------------------------------------------------------------------
-  // ⚡ DYNAMIC AUDIO RESOLVER: Fetch DB call context on the fly for the modal
-  // ----------------------------------------------------------------------
-  let liveCallContext = null;
-  let liveCallId = null;
-  let hasAudio = false;
-
-  if (activeWrapupItem) {
-    liveCallContext = getCallLogContext(activeWrapupItem.phone_number);
-    liveCallId = activeWrapupItem.callId || (liveCallContext ? liveCallContext.id : null);
-    hasAudio = liveCallContext ? liveCallContext.disposition === 'ANSWERED' : false;
   }
 
   return (
@@ -845,7 +864,7 @@ export default function App() {
 
             {/* 🎵 DYNAMIC REACTIVE AUDIO PLAYER */}
             {liveCallId ? (
-              hasAudio ? (
+              isAnswered ? (
                 <div className={`p-3.5 rounded-xl mb-4 border transition-all duration-300 shadow-inner ${isDarkMode ? 'bg-gray-950/60 border-amber-500/20' : 'bg-amber-50/60 border-amber-200'}`}>
                   <p className={`text-xs font-black mb-2 flex items-center gap-1.5 ${isDarkMode ? 'text-amber-400' : 'text-amber-800'}`}>
                     <Volume2 className="h-3.5 w-3.5 animate-pulse text-amber-500" /> بازشنوی فایل صوتی ضبط‌شده این مکالمه:
@@ -887,7 +906,7 @@ export default function App() {
               </div>
             </div>
 
-            <form onSubmit={(e) => handleQueueWrapupSubmit(e, activeWrapupItem.id, activeWrapupItem.phone_number, activeWrapupItem.disposition, activeWrapupItem.notes)} className="space-y-4">
+            <form onSubmit={(e) => handleQueueWrapupSubmit(e, activeWrapupItem.id, activeWrapupItem.phone_number, activeWrapupItem.disposition, activeWrapupItem.notes, liveCallId)} className="space-y-4">
               <div>
                 <label className={`block text-xs font-bold uppercase tracking-wide mb-2 ${textSecondary}`}>نتیجه نهایی کسب و کار <span className="text-red-500">*</span></label>
                 <select 
